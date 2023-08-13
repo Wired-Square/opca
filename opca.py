@@ -992,32 +992,35 @@ def parse_arguments(description):
         None
     """
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument('-a', '--account', required=True,
-            help='1Password Account. Example: company.1password.com')
 
     subparsers = parser.add_subparsers(title='Commands', dest='selection',
                                                         required=True)
 
-    subparser_ca = subparsers.add_parser('ca', help='Perform Certificate Authority actions')
-    subparser_ca.add_argument('-v', '--vault', required=True, help='CA Vault')
-    subparser_ca_actions = subparser_ca.add_subparsers(title='Actions', dest='action',
+    #
+    # CA
+    parser_ca = subparsers.add_parser('ca', help='Perform Certificate Authority actions')
+    parser_ca_actions = parser_ca.add_subparsers(title='Actions', dest='action',
                                                         required=True)
 
-    subparser_action_init_ca = subparser_ca_actions.add_parser('init-ca',
+    subparser_action_init_ca = parser_ca_actions.add_parser('init-ca',
             help='Initialise a 1Password Certificate Authority')
-    subparser_action_init_ca.add_argument('-o', '--org', required=True,
-            help='The organisation to use in the certificate subject')
+    subparser_action_init_ca.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
     subparser_action_init_ca.add_argument('-e', '--email', required=False,
             help='The email address to use in the certificate subject')
-    subparser_action_init_ca.add_argument('-c', '--city', required=False,
+    subparser_action_init_ca.add_argument('-o', '--org', required=True,
+            help='The organisation to use in the certificate subject')
+    subparser_action_init_ca.add_argument('-v', '--vault', required=True,
+            help='CA Vault')
+    subparser_action_init_ca.add_argument('--city', required=False,
             help='The city to use in the certificate subject')
-    subparser_action_init_ca.add_argument('-s', '--state', required=False,
+    subparser_action_init_ca.add_argument('--state', required=False,
             help='The state to use in the certificate subject')
-    subparser_action_init_ca.add_argument('-t', '--country', required=False,
+    subparser_action_init_ca.add_argument('--country', required=False,
             help='The country to use in the certificate subject')
     subparser_action_init_ca.add_argument('--ca-days', required=True, type=int,
             help='The number of days this CA certificate should be valid for')
-    subparser_action_init_ca.add_argument('-d', '--days', required=True, type=int,
+    subparser_action_init_ca.add_argument('--days', required=True, type=int,
             help='The number of days the certificate signed by this CA should be valid for')
     subparser_action_init_ca.add_argument('-n', '--cn', required=True,
             help='x509 CN attribute for the 1Password Certificate Authority')
@@ -1026,95 +1029,140 @@ def parse_arguments(description):
     subparser_action_init_ca.add_argument('--crl-url', required=False,
             help='The URL where we can find the Certificate Revocation List')
 
-    subparser_action_import_ca = subparser_ca_actions.add_parser('import-ca',
+    subparser_action_import_ca = parser_ca_actions.add_parser('import-ca',
             help='Import a 1Password Certificate Authority from file')
+    subparser_action_import_ca.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
     subparser_action_import_ca.add_argument('-c', '--cert-file', required=True,
             help='Certificate file')
     subparser_action_import_ca.add_argument('-k', '--key-file', required=True,
             help='Private Key file')
-    subparser_action_import_ca.add_argument('-s', '--serial', required=False,
-            help='Certificate serial number or CA next serial number')
-    subparser_action_import_ca.add_argument('-d', '--days', required=True, type=int,
+    subparser_action_import_ca.add_argument('-v', '--vault', required=True, help='CA Vault')
+    subparser_action_import_ca.add_argument('--days', required=True, type=int,
             help='The number of days the certificate should be valid for')
+    subparser_action_import_ca.add_argument('--serial', required=False,
+            help='Certificate serial number or CA next serial number')
     subparser_action_import_ca.add_argument('--ca-url', required=False,
             help='The URL where we can find the CA certificate')
     subparser_action_import_ca.add_argument('--crl-url', required=False,
             help='The URL where we can find the Certificate Revocation List')
 
-    subparser_action_import_ca = subparser_ca_actions.add_parser('get-ca-cert',
+    subparser_action_get_ca_cert = parser_ca_actions.add_parser('get-ca-cert',
             help='Get the object CA Certificate')
+    subparser_action_get_ca_cert.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_get_ca_cert.add_argument('-v', '--vault', required=True, help='CA Vault')
 
-    subparser_action_get_csr = subparser_ca_actions.add_parser('get-csr',
+    subparser_action_get_csr = parser_ca_actions.add_parser('get-csr',
             help='Get the CertificateBundle object Certificate Signing Request')
+    subparser_action_get_csr.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
     subparser_action_get_csr.add_argument('-n', '--cn', required=True,
             help='x509 CN attribute for the 1Password Certificate Authority')
+    subparser_action_get_csr.add_argument('-v', '--vault', required=True, help='CA Vault')
 
     """
-    subparser_action_gen_crl = subparser_ca_actions.add_parser('gen-crl',
+    subparser_action_gen_crl = parser_ca_actions.add_parser('gen-crl',
             help='Generate a Certificate Revokation List for the 1Password CA')
-    subparser_action_get_crl = subparser_ca_actions.add_parser('gen-crl',
+    subparser_action_get_crl = parser_ca_actions.add_parser('gen-crl',
             help='Generate a Certificate Revokation List for the 1Password CA')
     """
 
-    subparser_action_create_cert = subparser_ca_actions.add_parser('create-cert',
+    subparser_action_create_cert = parser_ca_actions.add_parser('create-cert',
             help='Create a new x509 CertificateBundle object')
+    subparser_action_create_cert.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_create_cert.add_argument('-n', '--cn', required=True,
+            help='CN attribute. Regular certificates use this for the 1Password title.')
     subparser_action_create_cert.add_argument('-t', '--cert-type', required=True,
             help='x509 Certificate type', choices=['vpnserver', 'vpnclient', 'webserver'])
     subparser_action_create_cert.add_argument('-s', '--serial', required=False,
             help='Certificate serial number or CA Certificate next serial number')
-    subparser_action_create_cert.add_argument('-n', '--cn', required=True,
-            help='CN attribute. Regular certificates use this for the 1Password title.')
-    subparser_action_create_cert.add_argument('-a', '--alt', nargs='+', required=False,
+    subparser_action_create_cert.add_argument('-v', '--vault', required=True, help='CA Vault')
+    subparser_action_create_cert.add_argument('--alt', nargs='+', required=False,
             help='Alternate CN.')
 
     """
-    action_import_ca = subparser_ca_actions.add_parser('renew-cert',
+    action_import_ca = parser_ca_actions.add_parser('renew-cert',
             help='Renew a x509 certificate')
     """
 
-    subparser_openvpn = subparsers.add_parser('openvpn', help='Perform OpenVPN actions')
-    subparser_openvpn.add_argument('-v', '--vault', required=True, help='CA Vault')
-    subparser_openvpn_actions = subparser_openvpn.add_subparsers(title='Actions', dest='action',
+    #
+    # OpenVPN
+    parser_openvpn = subparsers.add_parser('openvpn', help='Perform OpenVPN actions')
+    parser_openvpn_actions = parser_openvpn.add_subparsers(title='Actions', dest='action',
                                                                   required=True)
 
-    subparser_action_gen_dh = subparser_openvpn_actions.add_parser('gen-dh',
+    subparser_action_gen_dh = parser_openvpn_actions.add_parser('gen-dh',
             help='Generate Diffie-Hellman parameters')
+    subparser_action_gen_dh.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_gen_dh.add_argument('-v', '--vault', required=True,
+            help='CA Vault')
 
-    subparser_action_import_dh = subparser_openvpn_actions.add_parser('import-dh',
+    subparser_action_import_dh = parser_openvpn_actions.add_parser('import-dh',
             help='Importa Diffie-Hellman parameters from file')
+    subparser_action_import_dh.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
     subparser_action_import_dh.add_argument('-f', '--file', required=True,
             help='Diffie-Hellman parameters file')
+    subparser_action_import_dh.add_argument('-v', '--vault', required=True,
+            help='CA Vault')
 
-    subparser_action_get_dh = subparser_openvpn_actions.add_parser('get-dh',
+    subparser_action_get_dh = parser_openvpn_actions.add_parser('get-dh',
             help='Retrieve Diffie-Hellman parameters from 1Password')
+    subparser_action_get_dh.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_get_dh.add_argument('-v', '--vault', required=True,
+            help='CA Vault')
 
-    subparser_action_gen_ta_key = subparser_openvpn_actions.add_parser('gen-ta-key',
+    subparser_action_gen_ta_key = parser_openvpn_actions.add_parser('gen-ta-key',
             help='Generate a TLS Authentication Static Key')
+    subparser_action_gen_ta_key.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_gen_ta_key.add_argument('-v', '--vault', required=True, help='CA Vault')
 
-    subparser_action_import_ta_key = subparser_openvpn_actions.add_parser('import-ta-key',
+    subparser_action_import_ta_key = parser_openvpn_actions.add_parser('import-ta-key',
             help='Importa a TLS Authentication Static Key from file')
+    subparser_action_import_ta_key.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
     subparser_action_import_ta_key.add_argument('-f', '--file', required=True,
             help='TLS Authentication static key file')
+    subparser_action_import_ta_key.add_argument('-v', '--vault', required=True,
+            help='CA Vault')
 
-    subparser_action_gen_vpn_profile = subparser_openvpn_actions.add_parser('gen-vpn-profile',
+    subparser_action_gen_vpn_profile = parser_openvpn_actions.add_parser('gen-vpn-profile',
             help='Generate VPN profile from template')
+    subparser_action_gen_vpn_profile.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
     subparser_action_gen_vpn_profile.add_argument('-n', '--cn', required=True,
             help='The certificate CN. This is also the 1Password title.')
     subparser_action_gen_vpn_profile.add_argument('-t', '--template', required=True,
             help='OpenVPN template stored in 1Password')
+    subparser_action_gen_vpn_profile.add_argument('-v', '--vault', required=True,
+            help='CA Vault')
 
-    subparser_action_gen_sample_vpn_server = subparser_openvpn_actions.add_parser(
+    subparser_action_gen_sample_vpn_server = parser_openvpn_actions.add_parser(
             'gen-sample-vpn-server',
             help='Generate a sample OpenVPN object in 1Password')
+    subparser_action_gen_sample_vpn_server.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_gen_sample_vpn_server.add_argument('-v', '--vault', required=True,
+            help='CA Vault')
 
-    subparser_manage = subparsers.add_parser('manage', help='Perform management actions')
-    subparser_manage_actions = subparser_manage.add_subparsers(title='Actions', dest='action',
+    #
+    # Manage
+    parser_manage = subparsers.add_parser('manage', help='Perform management actions')
+    parser_manage_actions = parser_manage.add_subparsers(title='Actions', dest='action',
                                                                 required=True)
 
-    subparser_action_whoami = subparser_manage_actions.add_parser('test',
-            help='Run pre-flight checks')
-    subparser_action_whoami = subparser_manage_actions.add_parser('whoami',
+    subparser_action_test = parser_manage_actions.add_parser('test', help='Run pre-flight checks')
+    subparser_action_test.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_whoami = parser_manage_actions.add_parser('whoami',
             help='Find out about the current 1Password user')
+    subparser_action_whoami.add_argument('-a', '--account', required=True,
+            help='1Password Account. Example: company.1password.com')
 
     return parser.parse_args()
 
