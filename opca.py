@@ -263,11 +263,14 @@ def handle_ca_action(action, args):
     elif action == 'get-ca-cert':
         handle_ca_get_ca_cert(one_password, args)
 
+    elif action == 'get-csr':
+        handle_ca_get_csr(one_password, args)
+
     elif action == 'create-cert':
         handle_ca_create_cert(one_password, args)
 
-    elif action == 'get-csr':
-        handle_ca_get_csr(one_password, args)
+    elif action == 'import-cert':
+        handle_ca_import_cert(one_password, args)
 
     else:
         error('This feature is not yet written', 99)
@@ -479,6 +482,59 @@ def handle_ca_import_ca(one_password, args):
         title('Storing certificate bundle for ' + \
               f'{OPCA_COLOUR_BRIGHT}CA{COLOUR["reset"]} in 1Password', 9)
         result = one_password.store_cert_bundle(ca)
+        print_cmd_result(result.returncode)
+    else:
+        error('Private key and Certificate do not match', 1)
+
+def handle_ca_import_cert(one_password, args):
+    """
+    Import an existing private key and x509 certificate into a
+    1Password CA vault.
+
+    Args:
+        one_password (OpObject): An initialised 1Password object
+        args (argparse.Namespace): Command line arguments from argparse
+
+    Returns:
+        None
+
+    Raises:
+        None
+    """
+    if not one_password.ca_exists:
+        error('Certificate Authority does not exists. Aborting.', 1)
+
+    title('Importing a Certificate Bundle from file', 3)
+
+    title(f'Private Key {OPCA_COLOUR_BRIGHT}{args.key_file}{COLOUR["reset"]}', 9)
+    imported_private_key = read_file(args.key_file)
+    print_result(not is_empty(imported_private_key))
+
+    title(f'Certificate {OPCA_COLOUR_BRIGHT}{args.cert_file}{COLOUR["reset"]}', 9)
+    imported_certificate = read_file(args.cert_file)
+    print_result(not is_empty(imported_certificate))
+
+    object_config = {
+        'private_key': imported_private_key,
+        'certificate': imported_certificate,
+        'type': 'imported'
+    }
+
+    if args.cn:
+        item_title = args.cn
+    else:
+        item_title = None
+
+    cert_bundle = import_certificate_bundle(cert_type='imported', config=object_config,
+                                   item_title=item_title)
+
+    if not item_title:
+        item_title = cert_bundle.get_certificate_attrib('cn')
+
+    if cert_bundle.is_valid():
+        title('Storing certificate bundle for ' + \
+              f'{OPCA_COLOUR_BRIGHT}{item_title}{COLOUR["reset"]} in 1Password', 9)
+        result = one_password.store_cert_bundle(cert_bundle)
         print_cmd_result(result.returncode)
     else:
         error('Private key and Certificate do not match', 1)
@@ -1082,6 +1138,18 @@ def parse_arguments(description):
     subparser_action_create_cert.add_argument('--alt', nargs='+', required=False,
             help='Alternate CN.')
 
+    subparser_action_import_cert = parser_ca_actions.add_parser('import-cert',
+            help='Create a new x509 CertificateBundle object')
+    subparser_action_import_cert.add_argument('-a', '--account', required=False,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_import_cert.add_argument('-c', '--cert-file', required=True,
+            help='Certificate file')
+    subparser_action_import_cert.add_argument('-k', '--key-file', required=True,
+            help='Private Key file')
+    subparser_action_import_cert.add_argument('-n', '--cn', required=False,
+            help='x509 CN attribute for the 1Password Certificate Authority')
+    subparser_action_import_cert.add_argument('-v', '--vault', required=True, help='CA Vault')
+
     """
     action_import_ca = parser_ca_actions.add_parser('renew-cert',
             help='Renew a x509 certificate')
@@ -1369,7 +1437,6 @@ class CertificateBundle:
 
         self.type = cert_type
         self.title = title
-        self.key_size = key_size[self.type]
         self.config = config
 
         self.ca_certificate = None
@@ -1387,6 +1454,9 @@ class CertificateBundle:
             # Import
             self.import_private_key(self.config['private_key'], self.private_key_passphrase)
             self.import_certificate(self.config['certificate'])
+
+            if not self.title:
+                self.title = self.get_certificate_attrib('cn')
 
             # If we haven't been given these details, extract them from the certificate
             if 'org' not in self.config:
@@ -1412,6 +1482,7 @@ class CertificateBundle:
 
         else:
             # Generate
+            self.key_size = key_size[self.type]
             self.private_key = self.generate_private_key()
             self.csr = self.generate_csr(private_key=self.private_key, cert_cn=self.config['cn'])
             self.certificate = self.sign_certificate(self.csr, self.private_key, self.csr)
@@ -1531,7 +1602,10 @@ class CertificateBundle:
         Raises:
             None
         """
-        return self.csr.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+        if self.csr:
+            return self.csr.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+        else:
+            return None
 
     def get_certificate(self):
         """
@@ -2095,8 +2169,9 @@ class Op:
                 attributes.append(f'{self.config["days_item"]}=' + \
                                         f'{obj.get_config("days")}')
             else:
-                attributes.append(f'{self.config["csr_item"]}=' + \
-                                        f'{obj.get_csr()}')
+                if obj.get_csr() is not None:
+                    attributes.append(f'{self.config["csr_item"]}=' + \
+                                            f'{obj.get_csr()}')
 
             result = self.store_item(action='create',
                                      title=title,
