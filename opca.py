@@ -22,19 +22,18 @@ other features that need to be implemented to be properly useful
 
 - CA certificate and key renewal
 - Regular certificate and key renewal
-- Generate a CRL
 - Implement private key passphrases
 """
 
 import argparse
 import base64
 import json
-import re
 import os
 import shutil
 import secrets
 import subprocess
 import sys
+from datetime import datetime, timedelta
 from cryptography import x509
 from cryptography.x509 import UniformResourceIdentifier
 from cryptography.x509.oid import AuthorityInformationAccessOID
@@ -46,7 +45,6 @@ from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.serialization import Encoding
-from datetime import datetime, timedelta
 
 # Configuration
 OP_BIN = 'op'
@@ -93,21 +91,22 @@ BG_COLOUR = {
 }
 
 # Constants
-OPCA_VERSION       = "0.10"
-OPCA_TITLE         = "1Password Certificate Authority"
-OPCA_SHORT_TITLE   = "OPCA"
-OPCA_AUTHOR        = "Alex Ferrara <alex@wiredsquare.com>"
-OPCA_LICENSE       = "mit"
-OPCA_STATUS_COLUMN = 90
-OPCA_COLOUR_H      = [
+OPCA_VERSION        = "0.11"
+OPCA_TITLE          = "1Password Certificate Authority"
+OPCA_SHORT_TITLE    = "OPCA"
+OPCA_AUTHOR         = "Alex Ferrara <alex@wiredsquare.com>"
+OPCA_LICENSE        = "mit"
+OPCA_STATUS_COLUMN  = 90
+OPCA_COLOUR_H       = [
     COLOUR['bold_yellow'],
     COLOUR['bold_yellow'],
     COLOUR['bold_white'],
     COLOUR['underline_white']
 ]
-OPCA_COLOUR_ERROR  = COLOUR['bold_red']
-OPCA_COLOUR_OK     = COLOUR['green']
-OPCA_COLOUR_BRIGHT = COLOUR['bold_white']
+OPCA_COLOUR_ERROR   = COLOUR['bold_red']
+OPCA_COLOUR_OK      = COLOUR['green']
+OPCA_COLOUR_BRIGHT  = COLOUR['bold_white']
+OPCA_COLOUR_WARNING = COLOUR['bold_yellow']
 
 DEFAULT_OP_CONF = {
     'category': 'Secure Note',
@@ -123,12 +122,13 @@ DEFAULT_OP_CONF = {
     'start_date_item': 'not_before[text]',
     'expiry_date_item': 'not_after[text]',
     'serial_item': 'serial[text]',
-    'next_serial_item': 'next_serial[text]',
     'openvpn_title': 'OpenVPN',
     'dh_item': 'diffie-hellman.dh_parameters',
     'dh_key_size_item': 'diffie-hellman.key_size[text]',
     'ta_item': 'tls_authentication.static_key',
     'ta_key_size_item': 'tls_authentication.key_size[text]',
+    'ca_database_title': 'CA_Database',
+    'next_serial_item': 'config.next_serial[text]',
     'org_item': 'config.org[text]',
     'email_item': 'config.email[text]',
     'city_item': 'config.city[text]',
@@ -137,15 +137,13 @@ DEFAULT_OP_CONF = {
     'ca_url_item': 'config.ca_url[text]',
     'crl_url_item': 'config.crl_url[text]',
     'days_item': 'config.days[text]',
-    'crl_days_item': 'config.crl_days[text]',
-    'ca_database_title': 'CA_Database'
+    'crl_days_item': 'config.crl_days[text]'
 }
+
 DEFAULT_KEY_SIZE = {
     'ca': 4096,
     'dh': 2048,
     'ta': 2048,
-    'client': 2048,
-    'server': 2048,
     'vpnclient': 2048,
     'vpnserver': 2048,
     'webserver': 2048
@@ -210,33 +208,6 @@ def find_executable(file):
     """
     return shutil.which(file)
 
-def format_openvpn_static_key(hex_key, line_length=32):
-    """
-    Formats a TLS Authentication Static Key to the same format as OpenVPN
-
-    Args:
-        hex_key(str): The actual key consisting of random numbers
-        line_length(str): The maximum line length
-
-    Returns:
-        None
-    
-    Raises:
-        None
-    """
-
-    key_chunks = [hex_key[i:i + line_length] for i in range(0, len(hex_key), line_length)]
-
-    formatted_key = "\n".join(key_chunks)
-
-    formatted_key = f"""\
------BEGIN OpenVPN Static key V1-----
-{formatted_key}
------END OpenVPN Static key V1-----
-"""
-
-    return formatted_key
-
 def handle_ca_action(action, args):
     """
     Handle CA Actions called from the selection
@@ -257,334 +228,210 @@ def handle_ca_action(action, args):
     one_password = Op(binary=OP_BIN, account=args.account, vault=args.vault)
 
     if action == 'init-ca':
-        handle_ca_init_ca(one_password, args)
+        next_serial = 1
+
+        title('Initialising the Certificate Authority', 3)
+
+        ca_config = {
+            'command': 'init',
+            'cn': args.cn,
+            'next_serial': next_serial,
+            'ca_days': args.ca_days,
+            'days': args.days,
+            'key_size': DEFAULT_KEY_SIZE['ca']
+        }
+
+        attributes = [
+            'org',
+            'email',
+            'city',
+            'state',
+            'country',
+            'ca_url',
+            'crl_url',
+            'days',
+            'crl_days'
+        ]
+
+        for attr in attributes:
+            arg_value = getattr(args, attr, None)
+            if arg_value:
+                ca_config[attr] = arg_value
+
+        ca = CertificateAuthority(one_password=one_password,
+                                config=ca_config,
+                                op_config=DEFAULT_OP_CONF)
+
+        title(f'Checking [ {OPCA_COLOUR_BRIGHT}CA Certificate Bundle{COLOUR["reset"]} ] in 1Password', 9)
+        print_result(one_password.item_exists(DEFAULT_OP_CONF['ca_title']))
+
+        title(f'Validating [ {OPCA_COLOUR_BRIGHT}CA Certificate Bundle{COLOUR["reset"]} ] in 1Password', 9)
+        print_result(ca.is_valid())
+
+        title(f'Checking [ {OPCA_COLOUR_BRIGHT}Certificate Database{COLOUR["reset"]} ] in 1Password', 9)
+        print_result(one_password.item_exists(DEFAULT_OP_CONF['ca_database_title']))
 
     elif action == 'import-ca':
-        handle_ca_import_ca(one_password, args)
+
+        title('Importing a Certificate Authority from file', 3)
+
+        title(f'Private Key [ {OPCA_COLOUR_BRIGHT}{args.key_file}{COLOUR["reset"]} ]', 9)
+        imported_private_key = read_file(args.key_file)
+        print_result(not is_empty(imported_private_key))
+
+        title(f'Certificate [ {OPCA_COLOUR_BRIGHT}{args.cert_file}{COLOUR["reset"]} ]', 9)
+        imported_certificate = read_file(args.cert_file)
+        print_result(not is_empty(imported_certificate))
+
+        if args.serial:
+            next_serial = args.serial
+        else:
+            next_serial = x509.load_pem_x509_certificate(imported_certificate,
+                                                      default_backend).serial_number
+
+        title('The next available serial number is ' + \
+            f'[ {OPCA_COLOUR_BRIGHT}{next_serial}{COLOUR["reset"]} ]', 7)
+
+        ca_config = {
+            'command': 'import',
+            'private_key': imported_private_key,
+            'certificate': imported_certificate,
+            'next_serial': next_serial
+        }
+
+        attributes = [
+            'org',
+            'email',
+            'city',
+            'state',
+            'country',
+            'ca_url',
+            'crl_url',
+            'days',
+            'crl_days'
+        ]
+
+        for attr in attributes:
+            arg_value = getattr(args, attr, None)
+            if arg_value:
+                ca_config[attr] = arg_value
+
+        ca = CertificateAuthority(one_password=one_password,
+                                  config=ca_config,
+                                  op_config=DEFAULT_OP_CONF)
+
+        title(f'Checking [ {OPCA_COLOUR_BRIGHT}CA Certificate Bundle{COLOUR["reset"]} ] in 1Password', 9)
+        print_result(one_password.item_exists(DEFAULT_OP_CONF['ca_title']))
+
+        title(f'Validating [ {OPCA_COLOUR_BRIGHT}CA Certificate Bundle{COLOUR["reset"]} ] in 1Password', 9)
+        print_result(ca.is_valid())
+
+    elif action == 'get-ca-db':
+        ca = prepare_certificate_authority(one_password)
+
+        print(ca.ca_database)
 
     elif action == 'get-ca-cert':
-        handle_ca_get_ca_cert(one_password, args)
+        ca = prepare_certificate_authority(one_password)
+
+        print(ca.get_certificate())
 
     elif action == 'get-csr':
-        handle_ca_get_csr(one_password, args)
+        url = one_password.mk_url(args.cn, DEFAULT_OP_CONF['csr_item'])
+
+        result = one_password.read_item(url)
+
+        if result.returncode != 0:
+            error(result.stderr, 1)
+
+        print(result.stdout)
+
+    elif action == 'gen-ca-db':
+        ca_config = {
+            'command': 'rebuild-ca-database',
+            'next_serial': args.serial,
+            'crl_days': args.crl_days,
+            'days': args.days,
+            'ca_url': args.ca_url,
+            'crl_url': args.crl_url
+        }
+
+        ca = CertificateAuthority(one_password=one_password,
+                                config=ca_config,
+                                op_config=DEFAULT_OP_CONF)
 
     elif action == 'gen-crl':
-        handle_ca_gen_crl(one_password, args)
+        ca = prepare_certificate_authority(one_password)
+
+        if ca.process_ca_database():
+            title(f'Storing {OPCA_COLOUR_BRIGHT}Certificate Database{COLOUR["reset"]} into 1Password', 9)
+            result = one_password.store_ca_database(ca)
+            print_cmd_result(result.returncode)
+
+        print(ca.generate_crl())
 
     elif action == 'create-cert':
-        handle_ca_create_cert(one_password, args)
+        ca = prepare_certificate_authority(one_password)
+
+        if one_password.item_exists(args.cn):
+            error(f'CN {args.cn} already exists. Aborting', 1)
+
+        cert_config = ca.ca_certbundle.get_config()
+        cert_config['cn'] = args.cn
+        cert_config['key_size'] = DEFAULT_KEY_SIZE[args.cert_type]
+
+        title(f'Generating a certificate bundle for {OPCA_COLOUR_BRIGHT}{args.cn}{COLOUR["reset"]}', 9)
+
+        new_certificate_bundle = ca.generate_certificate_bundle(cert_type=args.cert_type,
+                                              item_title=args.cn,
+                                              config=cert_config)
+
+        print_result(new_certificate_bundle.is_valid())
 
     elif action == 'import-cert':
-        handle_ca_import_cert(one_password, args)
+        ca = prepare_certificate_authority(one_password)
+        object_config = {
+            'type': 'imported'
+        }
+
+        title('Importing a Certificate Bundle from file', 3)
+
+        if args.key_file:
+            title(f'Private Key {OPCA_COLOUR_BRIGHT}{args.key_file}{COLOUR["reset"]}', 9)
+            imported_private_key = read_file(args.key_file)
+            print_result(not is_empty(imported_private_key))
+
+            if not is_empty(imported_private_key):
+                object_config['private_key'] = imported_private_key
+        else:
+            title('Importing without Private Key', 8)
+
+        title(f'Certificate {OPCA_COLOUR_BRIGHT}{args.cert_file}{COLOUR["reset"]}', 9)
+        imported_certificate = read_file(args.cert_file)
+        print_result(not is_empty(imported_certificate))
+
+        if not is_empty(imported_certificate):
+            object_config['certificate'] = imported_certificate
+
+        if args.cn:
+            item_title = args.cn
+        else:
+            item_title = None
+
+        cert_bundle = ca.import_certificate_bundle(cert_type='imported',
+                                                  config=object_config,
+                                                  item_title=item_title)
+
+        if not item_title:
+            item_title = cert_bundle.get_certificate_attrib('cn')
+
+        title('Storing certificate bundle for ' + \
+            f'{OPCA_COLOUR_BRIGHT}{item_title}{COLOUR["reset"]} in 1Password', 9)
+        result = ca.store_certbundle(cert_bundle)
+        print_cmd_result(result.returncode)
 
     else:
         error('This feature is not yet written', 99)
-
-def handle_ca_create_cert(one_password, args):
-    """
-    Create a new CertificateBundle object with a generated key
-    and self-signed certificate
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    if one_password.item_exists(args.cn):
-        error(f'CN {args.cn} already exists. Aborting', 1)
-
-    ca = import_certificate_bundle_from_op(one_password,
-                                           item_title=DEFAULT_OP_CONF["ca_title"],
-                                           ca=True)
-
-    object_config = ca.get_default_config()
-    object_config['cn'] = args.cn
-
-    title(f'Generating a certificate bundle for {OPCA_COLOUR_BRIGHT}{args.cn}{COLOUR["reset"]}', 9)
-    new_certificate_bundle = CertificateBundle(cert_type=args.cert_type,
-                                               title=args.cn,
-                                               bundle_import=False,
-                                               config=object_config)
-
-    pem_csr = new_certificate_bundle.get_csr().encode('utf-8')
-    csr = x509.load_pem_x509_csr(pem_csr, default_backend())
-
-    signed_certificate = ca.sign_certificate(csr=csr, target=args.cert_type)
-
-    new_certificate_bundle.update_certificate(signed_certificate)
-    print_result(new_certificate_bundle.is_valid())
-
-    if new_certificate_bundle.is_valid():
-        title('Storing certificate bundle for ' + \
-              f'{OPCA_COLOUR_BRIGHT}{args.cn}{COLOUR["reset"]} in 1Password', 9)
-        result = one_password.store_cert_bundle(new_certificate_bundle)
-        print_cmd_result(result.returncode)
-    else:
-        error('Private key and Certificate do not match', 1)
-
-    title(f'Storing {OPCA_COLOUR_BRIGHT}CA next serial number{COLOUR["reset"]} in 1Password', 9)
-    result = one_password.store_item(title=DEFAULT_OP_CONF["ca_title"], action='edit',
-                    attributes=[f'{DEFAULT_OP_CONF["next_serial_item"]}={ca.get_next_serial()}'])
-    print_cmd_result(result.returncode)
-
-    title(f'Storing {OPCA_COLOUR_BRIGHT}Certificate Database{COLOUR["reset"]} into 1Password', 9)
-    result = one_password.store_ca_database(ca)
-    print_cmd_result(result.returncode)
-
-def handle_ca_gen_crl(one_password, args):
-    """
-    Generate a Certificate Revocation List. We do this by opportunistically processing the
-    certificate database that is stored in 1Password.
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    title(f'Generating a {OPCA_COLOUR_BRIGHT}Certificate Revocation List{COLOUR["reset"]}', 8)
-
-    if one_password.item_exists(DEFAULT_OP_CONF["ca_database_title"]):
-        print("Found CA Certificate Database")
-    else:
-        print("CA Certificate Database missing.")
-
-    ca = import_certificate_bundle_from_op(one_password,
-                                           item_title=DEFAULT_OP_CONF["ca_title"],
-                                           ca=True)
-
-    if ca.process_ca_database():
-        title(f'Storing {OPCA_COLOUR_BRIGHT}Certificate Database{COLOUR["reset"]} into 1Password', 9)
-        result = one_password.store_ca_database(ca)
-        print_cmd_result(result.returncode)
-
-    print(ca.generate_crl())
-
-def handle_ca_get_ca_cert(one_password, args):
-    """
-    Retreive the CA certificate and print it to the console
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-    ca = import_certificate_bundle_from_op(one_password, DEFAULT_OP_CONF["ca_title"], ca=True)
-
-    print(ca.get_certificate())
-
-def handle_ca_get_csr(one_password, args):
-    """
-    Retreive a Certificate Signing Request and print it to the console
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    url = one_password.mk_url(args.cn, DEFAULT_OP_CONF['csr_item'])
-
-    title(f'Loading CSR for [ {OPCA_COLOUR_BRIGHT}{args.cn}{COLOUR["reset"]} ]', 9)
-    result = one_password.read_item(url)
-    print_cmd_result(result.returncode)
-
-    if result.returncode != 0:
-        error(result.stderr, 1)
-
-    print(result.stdout)
-
-def handle_ca_init_ca(one_password, args):
-    """
-    Initialise the Certificate Authority object in 1Password
-    through generating the contents
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    if one_password.ca_exists:
-        error('Certificate Authority already exists. Aborting.', 1)
-
-    title('Initialising the Certificate Authority', 3)
-
-    next_serial = 1
-
-    title(f'Next serial number is {OPCA_COLOUR_BRIGHT}{next_serial}{COLOUR["reset"]}', 8)
-
-    object_config = {
-        'cn': args.cn,
-        'next_serial': next_serial,
-        'ca_days': args.ca_days,
-        'days': args.days
-    }
-
-    if args.org:
-        object_config['org'] = args.org
-    if args.email:
-        object_config['email'] = args.email
-    if args.city:
-        object_config['city'] = args.city
-    if args.state:
-        object_config['state'] = args.state
-    if args.country:
-        object_config['country'] = args.country
-    if args.ca_url:
-        object_config['ca_url'] = args.ca_url
-    if args.crl_url:
-        object_config['crl_url'] = args.crl_url
-
-    ca = CertificateBundle(cert_type='ca', title=DEFAULT_OP_CONF['ca_title'],
-                           bundle_import=False,
-                           config=object_config)
-
-    title('Storing the Certificate Bundle in 1Password', 9)
-    result = one_password.store_cert_bundle(ca)
-    print_cmd_result(result.returncode)
-
-    title(f'Storing {OPCA_COLOUR_BRIGHT}Certificate Database{COLOUR["reset"]} into 1Password', 9)
-    result = one_password.store_ca_database(ca)
-    print_cmd_result(result.returncode)
-
-def handle_ca_import_ca(one_password, args):
-    """
-    Initialise the Certificate Authority object in 1Password
-    by importing a PEM encoded private key and x509 certificate.
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-    if one_password.ca_exists:
-        error('Certificate Authority already exists. Aborting.', 1)
-
-    title('Importing a Certificate Authority from file', 3)
-
-    title(f'Private Key {OPCA_COLOUR_BRIGHT}{args.key_file}{COLOUR["reset"]}', 9)
-    imported_private_key = read_file(args.key_file)
-    print_result(not is_empty(imported_private_key))
-
-    title(f'Certificate {OPCA_COLOUR_BRIGHT}{args.cert_file}{COLOUR["reset"]}', 9)
-    imported_certificate = read_file(args.cert_file)
-    print_result(not is_empty(imported_certificate))
-
-    if args.serial:
-        next_serial = args.serial
-    else:
-        next_serial = 1
-
-    title('The next available serial number is ' + \
-          f'[ {OPCA_COLOUR_BRIGHT}{next_serial}{COLOUR["reset"]} ]', 7)
-
-    object_config = {
-        'private_key': imported_private_key,
-        'certificate': imported_certificate,
-        'next_serial': next_serial,
-        'days': args.days
-    }
-
-    if args.ca_url:
-        object_config['ca_url'] = args.ca_url
-    if args.crl_url:
-        object_config['crl_url'] = args.crl_url
-
-    ca = import_certificate_bundle(cert_type='ca', config=object_config,
-                                   item_title=DEFAULT_OP_CONF['ca_title'])
-
-    if ca.is_valid():
-        title('Storing certificate bundle for ' + \
-              f'{OPCA_COLOUR_BRIGHT}CA{COLOUR["reset"]} in 1Password', 9)
-        result = one_password.store_cert_bundle(ca)
-        print_cmd_result(result.returncode)
-    else:
-        error('Private key and Certificate do not match', 1)
-
-def handle_ca_import_cert(one_password, args):
-    """
-    Import an existing private key and x509 certificate into a
-    1Password CA vault.
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-    if not one_password.ca_exists:
-        error('Certificate Authority does not exists. Aborting.', 1)
-
-    title('Importing a Certificate Bundle from file', 3)
-
-    title(f'Private Key {OPCA_COLOUR_BRIGHT}{args.key_file}{COLOUR["reset"]}', 9)
-    imported_private_key = read_file(args.key_file)
-    print_result(not is_empty(imported_private_key))
-
-    title(f'Certificate {OPCA_COLOUR_BRIGHT}{args.cert_file}{COLOUR["reset"]}', 9)
-    imported_certificate = read_file(args.cert_file)
-    print_result(not is_empty(imported_certificate))
-
-    object_config = {
-        'private_key': imported_private_key,
-        'certificate': imported_certificate,
-        'type': 'imported'
-    }
-
-    if args.cn:
-        item_title = args.cn
-    else:
-        item_title = None
-
-    cert_bundle = import_certificate_bundle(cert_type='imported', config=object_config,
-                                   item_title=item_title)
-
-    if not item_title:
-        item_title = cert_bundle.get_certificate_attrib('cn')
-
-    if cert_bundle.is_valid():
-        title('Storing certificate bundle for ' + \
-              f'{OPCA_COLOUR_BRIGHT}{item_title}{COLOUR["reset"]} in 1Password', 9)
-        result = one_password.store_cert_bundle(cert_bundle)
-        print_cmd_result(result.returncode)
-    else:
-        error('Private key and Certificate do not match', 1)
 
 def handle_openvpn_action(action, args):
     """
@@ -606,184 +453,143 @@ def handle_openvpn_action(action, args):
     one_password = Op(binary=OP_BIN, account=args.account, vault=args.vault)
 
     if action == 'gen-dh':
-        handle_openvpn_gen_dh(one_password, args)
+        title('Generate the DH Parameters', 3)
+
+        parameters = dh.generate_parameters(generator=2,
+                                            key_size=DEFAULT_KEY_SIZE["dh"],
+                                            backend=default_backend())
+
+        dh_parameters_pem = parameters.parameter_bytes(encoding=serialization.Encoding.PEM,
+                                    format=serialization.ParameterFormat.PKCS3).decode('utf-8')
+
+        title('Storing the DH parameters in 1Password', 9)
+        attributes = [f'{DEFAULT_OP_CONF["dh_item"]}={dh_parameters_pem}',
+                    f'{DEFAULT_OP_CONF["dh_key_size_item"]}={DEFAULT_KEY_SIZE["dh"]}'
+                    ]
+
+        result = one_password.edit_or_create(item_title=DEFAULT_OP_CONF["openvpn_title"],
+                            attributes=attributes)
+
+        print_cmd_result(result.returncode)
 
     elif action == 'get-dh':
-        handle_openvpn_get_dh(one_password, args)
+        url = one_password.mk_url(item_title=DEFAULT_OP_CONF["openvpn_title"],
+                        value_key=DEFAULT_OP_CONF["dh_item"].replace(".", "/"))
+
+        title(f'Reading the [ {OPCA_COLOUR_BRIGHT}{url}{COLOUR["reset"]} ] from 1Password', 9)
+
+        result = one_password.read_item(url)
+        print_cmd_result(result.returncode)
+
+        if result.returncode == 0:
+            print(result.stdout)
 
     elif action == 'import-dh':
-        handle_openvpn_import_dh(one_password, args)
+        title('Importing a Diffie-Hellmnan parameters from file', 3)
+
+        title(f'DH Parameters {OPCA_COLOUR_BRIGHT}{args.file}{COLOUR["reset"]}', 9)
+        imported_ta_key = read_file(args.file).decode('UTF-8')
+        print_result(not is_empty(imported_ta_key))
+
+        key_size = dh_key_size_estimate(imported_ta_key)
+
+        title(f'DH Key size is estimated at {OPCA_COLOUR_BRIGHT}{key_size}{COLOUR["reset"]} bits', 8)
+
+        title('Storing the DH Parameters in 1Password', 9)
+        attributes = [f'{DEFAULT_OP_CONF["dh_item"]}={imported_ta_key}',
+                    f'{DEFAULT_OP_CONF["dh_key_size_item"]}={key_size}'
+                    ]
+
+        result = one_password.edit_or_create(item_title=DEFAULT_OP_CONF["openvpn_title"],
+                            attributes=attributes)
+
+        print_cmd_result(result.returncode)
 
     elif action == 'gen-ta-key':
-        handle_openvpn_gen_ta_key(one_password, args)
+        line_length = 32
+
+        title('Generate the OpenVPN TLS Authentication Key', 3)
+
+        hex_key = secrets.token_bytes(DEFAULT_KEY_SIZE["ta"] // 8).hex()
+
+        key_chunks = [hex_key[i:i + line_length] for i in range(0, len(hex_key), line_length)]
+
+        formatted_key = "\n".join(key_chunks)
+
+        formatted_key = f"""\
+-----BEGIN OpenVPN Static key V1-----
+{formatted_key}
+-----END OpenVPN Static key V1-----
+"""
+
+        title('Storing the TLS Authentication Key in 1Password', 9)
+        attributes = [f'{DEFAULT_OP_CONF["ta_item"]}={formatted_key}',
+                    f'{DEFAULT_OP_CONF["ta_key_size_item"]}={DEFAULT_KEY_SIZE["ta"]}'
+                    ]
+
+        result = one_password.edit_or_create(item_title=DEFAULT_OP_CONF["openvpn_title"],
+                            attributes=attributes)
+
+        print_cmd_result(result.returncode)
 
     elif action == 'import-ta-key':
-        handle_openvpn_import_ta_key(one_password, args)
+        title('Importing a TLS Authentication static key from file', 3)
+
+        title(f'TA Key {OPCA_COLOUR_BRIGHT}{args.file}{COLOUR["reset"]}', 9)
+        imported_ta_key = read_file(args.file).decode('UTF-8')
+        print_result(not is_empty(imported_ta_key))
+
+        key_size = ta_key_size(imported_ta_key)
+
+        title(f'TA Key size is {OPCA_COLOUR_BRIGHT}{key_size}{COLOUR["reset"]} bits', 8)
+
+        title('Storing the TLS Authentication Key in 1Password', 9)
+        attributes = [f'{DEFAULT_OP_CONF["ta_item"]}={imported_ta_key}',
+                    f'{DEFAULT_OP_CONF["ta_key_size_item"]}={key_size}'
+                    ]
+
+        result = one_password.edit_or_create(item_title=DEFAULT_OP_CONF["openvpn_title"],
+                            attributes=attributes)
+
+        print_cmd_result(result.returncode)
 
     elif action == 'gen-vpn-profile':
-        handle_openvpn_gen_vpn_profile(one_password, args)
+        env_vars = os.environ.copy()
+        env_vars['USER'] = args.cn
+
+        title('Reading VPN profile ' + \
+            f'[ {OPCA_COLOUR_BRIGHT}{args.template}{COLOUR["reset"]} ] from 1Password', 9)
+
+        result = one_password.read_item(url = one_password.mk_url(
+                            item_title=DEFAULT_OP_CONF["openvpn_title"],
+                            value_key=f'template/{args.template}'))
+        print_cmd_result(result.returncode)
+
+        if result.returncode == 0:
+            ovpn_template = result.stdout
+        else:
+            error(result.stderr, result.returncode)
+
+        title(f'Generating VPN profile for [ {OPCA_COLOUR_BRIGHT}{args.cn}{COLOUR["reset"]} ]', 9)
+        result = one_password.inject_item(env_vars=env_vars, template=ovpn_template)
+        print_cmd_result(result.returncode)
+
+        if result.returncode != 0:
+            error(result.stderr, result.returncode)
+
+        title('Storing VPN profile in 1Password', 9)
+        one_password.store_document(action='create', item_title=f'VPN_{args.cn}',
+                        filename=f'{args.cn}-{args.template}.ovpn', str_in=result.stdout)
+        print_cmd_result(result.returncode)
 
     elif action == 'gen-sample-vpn-server':
-        handle_openvpn_gen_sample_vpn_server(one_password, args)
+        title('Storing the sample OpenVPN configuration template', 9)
 
-    else:
-        error('This feature is not yet written', 99)
-
-def handle_openvpn_gen_dh(one_password, args):
-    """
-    Create the Diffie-Hellman parameters and store them in 1Password
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    title('Generate the DH Parameters', 3)
-
-    parameters = dh.generate_parameters(generator=2,
-                                        key_size=DEFAULT_KEY_SIZE["dh"],
-                                        backend=default_backend())
-
-    dh_parameters_pem = parameters.parameter_bytes(encoding=serialization.Encoding.PEM,
-                                format=serialization.ParameterFormat.PKCS3).decode('utf-8')
-
-    title('Storing the DH parameters in 1Password', 9)
-    attributes = [f'{DEFAULT_OP_CONF["dh_item"]}={dh_parameters_pem}',
-                f'{DEFAULT_OP_CONF["dh_key_size_item"]}={DEFAULT_KEY_SIZE["dh"]}'
-                ]
-
-    result = one_password.edit_or_create(title=DEFAULT_OP_CONF["openvpn_title"],
-                        attributes=attributes)
-
-    print_cmd_result(result.returncode)
-
-def handle_openvpn_get_dh(one_password, args):
-    """
-    TITLE
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    url = one_password.mk_url(item_title=DEFAULT_OP_CONF["openvpn_title"],
-                    value_key=DEFAULT_OP_CONF["dh_item"].replace(".", "/"))
-
-    title(f'Reading the [ {OPCA_COLOUR_BRIGHT}{url}{COLOUR["reset"]} ] from 1Password', 9)
-
-    result = one_password.read_item(url)
-    print_cmd_result(result.returncode)
-
-    if result.returncode == 0:
-        print(result.stdout)
-
-def handle_openvpn_gen_ta_key(one_password, args):
-    """
-    Generate the TLS Authentication Static Key and store it in 1Password
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    title('Generate the OpenVPN TLS Authentication Key', 3)
-
-    ta_key = secrets.token_bytes(DEFAULT_KEY_SIZE["ta"] // 8).hex()
-
-    formatted_ta_key = format_openvpn_static_key(ta_key)
-
-    title('Storing the TLS Authentication Key in 1Password', 9)
-    attributes = [f'{DEFAULT_OP_CONF["ta_item"]}={formatted_ta_key}',
-                f'{DEFAULT_OP_CONF["ta_key_size_item"]}={DEFAULT_KEY_SIZE["ta"]}'
-                ]
-
-    result = one_password.edit_or_create(title=DEFAULT_OP_CONF["openvpn_title"],
-                        attributes=attributes)
-
-    print_cmd_result(result.returncode)
-
-def handle_openvpn_gen_vpn_profile(one_password, args):
-    """
-    Generate a OpenVPN profile from a template stored in 1Password,
-    then save the profile to 1Password as a document
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    env_vars = os.environ.copy()
-    env_vars['USER'] = args.cn
-
-    title('Reading VPN profile ' + \
-          f'[ {OPCA_COLOUR_BRIGHT}{args.template}{COLOUR["reset"]} ] from 1Password', 9)
-
-    result = one_password.read_item(url = one_password.mk_url(
-                        item_title=DEFAULT_OP_CONF["openvpn_title"],
-                        value_key=f'template/{args.template}'))
-    print_cmd_result(result.returncode)
-
-    if result.returncode == 0:
-        ovpn_template = result.stdout
-    else:
-        error(result.stderr, result.returncode)
-
-    title(f'Generating VPN profile for [ {OPCA_COLOUR_BRIGHT}{args.cn}{COLOUR["reset"]} ]', 9)
-    result = one_password.inject_item(env_vars=env_vars, template=ovpn_template)
-    print_cmd_result(result.returncode)
-
-    if result.returncode != 0:
-        error(result.stderr, result.returncode)
-
-    title('Storing VPN profile in 1Password', 9)
-    one_password.store_document(action='create', title=f'VPN_{args.cn}',
-                       filename=f'{args.cn}-{args.template}.ovpn', str_in=result.stdout)
-    print_cmd_result(result.returncode)
-
-def handle_openvpn_gen_sample_vpn_server(one_password, args):
-    """
-    Generate the boilerplate sample OpenVPN server object in 1Password
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    title('Storing the sample OpenVPN configuration template', 9)
-
-    attributes = ['server.hostname[text]=vpn.domain.com.au',
-                'server.port[text]=1194',
-                f'''template.sample[text]=#
+        attributes = ['server.hostname[text]=vpn.domain.com.au',
+                    'server.port[text]=1194',
+                    'server.cipher[text]=aes-256-gcm',
+                    'server.auth[text]=sha256',
+                    f'''template.sample[text]=#
 # Client - {{{{ op://{args.vault}/$USER/cn }}}}
 #
 
@@ -797,8 +603,8 @@ resolv-retry infinite
 nobind
 persist-key
 persist-tun
-cipher aes-256-gcm
-auth sha256
+cipher {{{{ op://{args.vault}/{DEFAULT_OP_CONF["openvpn_title"]}/server/cipher }}}}
+auth {{{{ op://{args.vault}/{DEFAULT_OP_CONF["openvpn_title"]}/server/auth }}}}
 verb 3
 key-direction 1
 mssfix 1300
@@ -816,79 +622,13 @@ mssfix 1300
 </tls-auth>
 ''']
 
-    result = one_password.store_item(title=DEFAULT_OP_CONF["openvpn_title"], action='create',
-                            attributes=attributes)
+        result = one_password.store_item(item_title=DEFAULT_OP_CONF["openvpn_title"], action='create',
+                                attributes=attributes)
 
-    print_cmd_result(result.returncode)
+        print_cmd_result(result.returncode)
 
-def handle_openvpn_import_dh(one_password, args):
-    """
-    Import Diffie-Hellman parameters from file and store it in 1Password
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-    title('Importing a Diffie-Hellmnan parameters from file', 3)
-
-    title(f'DH Parameters {OPCA_COLOUR_BRIGHT}{args.file}{COLOUR["reset"]}', 9)
-    imported_ta_key = read_file(args.file).decode('UTF-8')
-    print_result(not is_empty(imported_ta_key))
-
-    key_size = dh_key_size_estimate(imported_ta_key)
-
-    title(f'DH Key size is estimated at {OPCA_COLOUR_BRIGHT}{key_size}{COLOUR["reset"]} bits', 8)
-
-    title('Storing the DH Parameters in 1Password', 9)
-    attributes = [f'{DEFAULT_OP_CONF["dh_item"]}={imported_ta_key}',
-                f'{DEFAULT_OP_CONF["dh_key_size_item"]}={key_size}'
-                ]
-
-    result = one_password.edit_or_create(title=DEFAULT_OP_CONF["openvpn_title"],
-                        attributes=attributes)
-
-    print_cmd_result(result.returncode)
-
-def handle_openvpn_import_ta_key(one_password, args):
-    """
-    Import a TLS Authentication static key from file and
-    store it in 1Password
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        args (argparse.Namespace): Command line arguments from argparse
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-    title('Importing a TLS Authentication static key from file', 3)
-
-    title(f'TA Key {OPCA_COLOUR_BRIGHT}{args.file}{COLOUR["reset"]}', 9)
-    imported_ta_key = read_file(args.file).decode('UTF-8')
-    print_result(not is_empty(imported_ta_key))
-
-    key_size = ta_key_size(imported_ta_key)
-
-    title(f'TA Key size is {OPCA_COLOUR_BRIGHT}{key_size}{COLOUR["reset"]} bits', 8)
-
-    title('Storing the TLS Authentication Key in 1Password', 9)
-    attributes = [f'{DEFAULT_OP_CONF["ta_item"]}={imported_ta_key}',
-                f'{DEFAULT_OP_CONF["ta_key_size_item"]}={key_size}'
-                ]
-
-    result = one_password.edit_or_create(title=DEFAULT_OP_CONF["openvpn_title"],
-                        attributes=attributes)
-
-    print_cmd_result(result.returncode)
+    else:
+        error('This feature is not yet written', 99)
 
 def handle_manage_action(action, args):
     """
@@ -907,7 +647,7 @@ def handle_manage_action(action, args):
 
     title('Management', extra=action, level=2)
 
-    one_password = Op(bin=OP_BIN, account=args.account, vault=None)
+    one_password = Op(binary=OP_BIN, account=args.account, vault=None)
 
     if action == 'test':
         title('Test the system dependencies', level=3)
@@ -936,155 +676,6 @@ def handle_manage_action(action, args):
         print(result.stdout)
     else:
         error('This feature is not yet written', 99)
-
-def import_certificate_bundle(cert_type, item_title, config):
-    """
-    Imports a certificate bundle from variables
-
-    Args:
-        type (str): Certificate Type (ca, host, vpnclient, vpnserver)
-        item_title (str): The name to object will be stored as in 1Password
-        config (dict): A dictionary of certificate configuration items
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    obj = CertificateBundle(cert_type=cert_type,
-                            title=item_title,
-                            bundle_import=True,
-                            config=config)
-
-    title('Checking certificate bundle', 9)
-    print_result(obj.is_valid())
-
-    return obj
-
-def import_certificate_bundle_from_op(one_password, item_title, ca=False):
-    """
-    Imports a certificate bundle from 1Password
-
-    Args:
-        one_password (OpObject): An initialised 1Password object
-        item_title (str): The 1Password object that contains a certificate bundle
-        ca (bool): Is the certificate bundle our CA?
-
-    Returns:
-        CertificateBundle
-
-    Raises:
-        None
-    """
-
-    object_config = {}
-    cert_type = None
-    result_dict = {}
-
-    if not one_password.ca_exists:
-        error('CA does not exist. Have you considered using ' + \
-              f'{OPCA_COLOUR_BRIGHT}init-ca or import-ca{COLOUR["reset"]}', 1)
-
-    if ca:
-        object_desc = 'Certificate Authority'
-
-        title(f'Loading {OPCA_COLOUR_BRIGHT}Certificate Database{COLOUR["reset"]} from 1Password', 9)
-        result = one_password.get_item(DEFAULT_OP_CONF['ca_database_title'])
-        print_cmd_result(result.returncode)
-
-        if result.returncode == 0:
-            loaded_ca_db = json.loads(result.stdout)
-
-            for field in loaded_ca_db['fields']:
-                if 'section' in field:
-                    section_label = field['section']['label']
-                    field_label = field['label']
-                    field_value = field.get('value', '')
-
-                    if section_label not in result_dict:
-                        result_dict[section_label] = {'serial': int(section_label)}
-
-                    if field_label == 'status':
-                        result_dict[section_label]['status'] = field_value
-                    elif field_label == 'cn':
-                        result_dict[section_label]['cn'] = field_value
-                    elif field_label == 'subject':
-                        result_dict[section_label]['subject'] = field_value
-                    elif field_label == 'expiry_date':
-                        result_dict[section_label]['expiry_date'] = field_value
-                    elif field_label == 'revocation_date':
-                        result_dict[section_label]['revocation_date'] = field_value
-
-            object_config['ca_database'] = list(result_dict.values())
-        else:
-            object_config['ca_database'] = []
-    else:
-        object_desc = 'Regular Certificate'
-
-    title(f'Importing a {object_desc}', 3)
-
-    title(f'Loading {OPCA_COLOUR_BRIGHT}{item_title}{COLOUR["reset"]} from 1Password', 9)
-    result = one_password.get_item(item_title)
-    loaded_object = json.loads(result.stdout)
-    print_cmd_result(result.returncode)
-
-    for field in loaded_object['fields']:
-        if field['label'] == 'certificate':
-            title(f'Found [ {OPCA_COLOUR_BRIGHT}x509 Certificate{COLOUR["reset"]} ]', 8)
-            object_config['certificate'] = field['value'].encode('utf-8')
-        elif field['label'] == 'private_key':
-            title(f'Found [ {OPCA_COLOUR_BRIGHT}Private Key{COLOUR["reset"]} ]', 8)
-            object_config['private_key'] = field['value'].encode('utf-8')
-        elif field['label'] == 'next_serial':
-            title('Next serial number is ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]}{COLOUR["reset"]} ]', 8)
-            object_config['next_serial'] = field['value']
-        elif field['label'] == 'type':
-            title('Found type of ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]}{COLOUR["reset"]} ]', 8)
-            object_config['cert_type'] = field['value']
-            cert_type = field['value']
-        elif field['label'] == 'ca_url':
-            title('Found CA URL ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]}{COLOUR["reset"]} ]', 8)
-            object_config['ca_url'] = field['value']
-        elif field['label'] == 'crl_url':
-            title('Found CRL URL ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]}{COLOUR["reset"]} ]', 8)
-            object_config['crl_url'] = field['value']
-        elif field['label'] == 'org':
-            title('Found Organisation ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]}{COLOUR["reset"]} ]', 8)
-            object_config['org'] = field['value']
-        elif field['label'] == 'country':
-            title('Found Country ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]}{COLOUR["reset"]} ]', 8)
-            object_config['country'] = field['value']
-        elif field['label'] == 'state':
-            title('Found State ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]}{COLOUR["reset"]} ]', 8)
-            object_config['state'] = field['value']
-        elif field['label'] == 'city':
-            title('Found City ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]}{COLOUR["reset"]} ]', 8)
-            object_config['city'] = field['value']
-        elif field['label'] == 'email':
-            title('Found Email ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]}{COLOUR["reset"]} ]', 8)
-            object_config['email'] = field['value']
-        elif field['label'] == 'days':
-            title('Found default validity ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]} days{COLOUR["reset"]} ]', 8)
-            object_config['days'] = field['value']
-        elif field['label'] == 'crl_days':
-            title('Found default crl validity ' + \
-                  f'[ {OPCA_COLOUR_BRIGHT}{field["value"]} days{COLOUR["reset"]} ]', 8)
-            object_config['crl_days'] = field['value']
-
-    return import_certificate_bundle(cert_type=cert_type, item_title=item_title,
-                                     config=object_config)
 
 def is_empty(var):
     """
@@ -1159,6 +750,8 @@ def parse_arguments(description):
             help='The country to use in the certificate subject')
     subparser_action_init_ca.add_argument('--ca-days', required=True, type=int,
             help='The number of days this CA certificate should be valid for')
+    subparser_action_init_ca.add_argument('--crl-days', required=True, type=int,
+            help='The number of days a CRL should be valid for')
     subparser_action_init_ca.add_argument('--days', required=True, type=int,
             help='The number of days the certificate signed by this CA should be valid for')
     subparser_action_init_ca.add_argument('-n', '--cn', required=True,
@@ -1179,12 +772,20 @@ def parse_arguments(description):
     subparser_action_import_ca.add_argument('-v', '--vault', required=True, help='CA Vault')
     subparser_action_import_ca.add_argument('--days', required=True, type=int,
             help='The number of days the certificate should be valid for')
+    subparser_action_import_ca.add_argument('--crl-days', required=True, type=int,
+            help='The number of days a CRL should be valid for')
     subparser_action_import_ca.add_argument('--serial', required=False,
             help='Certificate serial number or CA next serial number')
     subparser_action_import_ca.add_argument('--ca-url', required=False,
             help='The URL where we can find the CA certificate')
     subparser_action_import_ca.add_argument('--crl-url', required=False,
             help='The URL where we can find the Certificate Revocation List')
+
+    subparser_action_get_ca_db = parser_ca_actions.add_parser('get-ca-db',
+            help='Generate a Certificate Database for the 1Password CA')
+    subparser_action_get_ca_db.add_argument('-a', '--account', required=False,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_get_ca_db.add_argument('-v', '--vault', required=True, help='CA Vault')
 
     subparser_action_get_ca_cert = parser_ca_actions.add_parser('get-ca-cert',
             help='Get the object CA Certificate')
@@ -1199,6 +800,22 @@ def parse_arguments(description):
     subparser_action_get_csr.add_argument('-n', '--cn', required=True,
             help='x509 CN attribute for the 1Password Certificate Authority')
     subparser_action_get_csr.add_argument('-v', '--vault', required=True, help='CA Vault')
+
+    subparser_action_gen_ca_db = parser_ca_actions.add_parser('gen-ca-db',
+            help='Generate a Certificate Database for the 1Password CA')
+    subparser_action_gen_ca_db.add_argument('-a', '--account', required=False,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_gen_ca_db.add_argument('-v', '--vault', required=True, help='CA Vault')
+    subparser_action_gen_ca_db.add_argument('--days', required=True, type=int,
+            help='The number of days the certificate should be valid for')
+    subparser_action_gen_ca_db.add_argument('--crl-days', required=True, type=int,
+            help='The number of days a CRL should be valid for')
+    subparser_action_gen_ca_db.add_argument('--serial', required=False,
+            help='Certificate Authority next serial number')
+    subparser_action_gen_ca_db.add_argument('--ca-url', required=False,
+            help='The URL where we can find the CA certificate')
+    subparser_action_gen_ca_db.add_argument('--crl-url', required=False,
+            help='The URL where we can find the Certificate Revocation List')
 
     subparser_action_gen_crl = parser_ca_actions.add_parser('gen-crl',
             help='Generate a Certificate Revokation List for the 1Password CA')
@@ -1226,7 +843,7 @@ def parse_arguments(description):
             help='1Password Account. Example: company.1password.com')
     subparser_action_import_cert.add_argument('-c', '--cert-file', required=True,
             help='Certificate file')
-    subparser_action_import_cert.add_argument('-k', '--key-file', required=True,
+    subparser_action_import_cert.add_argument('-k', '--key-file', required=False,
             help='Private Key file')
     subparser_action_import_cert.add_argument('-n', '--cn', required=False,
             help='x509 CN attribute for the 1Password Certificate Authority')
@@ -1316,6 +933,31 @@ def parse_arguments(description):
 
     return parser.parse_args()
 
+def prepare_certificate_authority(one_password):
+    """
+    Prepares the certificate authority object for later consumption
+
+    Args:
+        command (str): The way we will construct the certificate authority
+        config (dict): CA Configuration
+
+    Returns:
+        CertificateAuthority
+
+    Raises:
+        None
+    """
+
+    ca_config = {
+        'command': 'retrieve'
+    }
+
+    ca = CertificateAuthority(one_password=one_password,
+                            config=ca_config,
+                            op_config=DEFAULT_OP_CONF)
+
+    return ca
+
 def print_cmd_result(returncode, ok_msg='  OK  ', failed_msg='FAILED'):
     """
     Prints a ANSI success or failure message in a RedHat theme
@@ -1376,11 +1018,11 @@ def read_file(file_path):
     Raises:
         None
     """
+    content = None
 
     try:
         with open(file_path, 'rb') as file:
             content = file.read()
-        return content
     except FileNotFoundError:
         error(f"File '{file_path}' not found.", 1)
     except PermissionError:
@@ -1389,6 +1031,8 @@ def read_file(file_path):
         error(f"I/O error occurred while reading file '{file_path}': {err}", 1)
     except Exception as err:
         error(f"An unexpected error occurred: {err}", 1)
+
+    return content
 
 def run_command(command, text=True, shell=False, stdin=None, str_in=None, env_vars=None):
     """
@@ -1419,24 +1063,6 @@ def run_command(command, text=True, shell=False, stdin=None, str_in=None, env_va
     except FileNotFoundError:
         error(f'Command not found. Does { command[0] }it exist?', 1)
         sys.exit(1)
-
-def strip_op_type(text):
-    """
-    Strips the 1Password item types encapsulated by square brackets
-
-    Args:
-        text (str): The 1Password value key to strip
-
-    Returns:
-        str: A 1Password value key stripped of type
-
-    Raises:
-        None
-    """
-
-    pattern = r"\[.*?\]"
-    result = re.sub(pattern, "", text)
-    return result
 
 def ta_key_size(ta_key):
     """
@@ -1503,90 +1129,76 @@ def title(text, level=1, extra=None):
     else:
         print(f'{title_colour}{text}{reset}\n')
 
+def warning(warning_msg):
+    """
+    Prints a warning message with custom formatting.
+
+    Args:
+        warning_msg (str): The error message to be displayed.
+
+    Returns:
+        None
+    
+    Raises:
+        None
+    """
+
+    error_colour = OPCA_COLOUR_WARNING
+    reset = COLOUR['reset']
+
+    print(f'{error_colour}Warning:{reset} {warning_msg}')
+
 
 class CertificateBundle:
-    def __init__(self, cert_type, title, bundle_import, config, key_size=DEFAULT_KEY_SIZE):
+    """ Class to contain x509 Certificates, Private Keys and Signing Requests """
+    def __init__(self, cert_type, item_title, import_certbundle, config):
         """
         CertificateBundle - A class for dealing with x509 certificate items
 
         Args:
             cert_type (str): Certificate Type (ca, host, vpnclient, vpnserver)
-            title (str): The name to object will be stored as in 1Password
-            bundle_import (bool): Are we importing?
+            item_title (str): The name to object will be stored as in 1Password
+            import_certbundle (bool): Are we importing?
             config (dict): A dictionary of certificate configuration items
-            key_size (dict): A dictionary of private key sizes keyed to the certificate type
         """
-
         self.type = cert_type
-        self.title = title
+        self.title = item_title
         self.config = config
-
-        self.ca_certificate = None
-        self.ca_database = None
-        self.certificate = None
-        self.certs_revoked = None
-        self.certs_expires_soon = None
-        self.certs_valid = None
         self.csr = None
-        self.next_serial = None
         self.private_key = None
         self.private_key_passphrase = None # TODO: Implement private key passphrase
+        self.certificate = None
+        self.config_attrs = (
+            'org',
+            'city',
+            'state',
+            'country',
+            'email'
+        )
 
-        self.initialised = False
-
-        if self.type == 'ca':
-            self.next_serial = int(self.config['next_serial'])
-
-            if bundle_import:
-                self.ca_database = self.config['ca_database']
-            else:
-                self.ca_database = []
-
-        if bundle_import:
+        if import_certbundle:
             # Import
-            self.import_private_key(self.config['private_key'], self.private_key_passphrase)
+            if 'private_key' in self.config:
+                self.import_private_key(self.config['private_key'], self.private_key_passphrase)
             self.import_certificate(self.config['certificate'])
 
             if not self.title:
                 self.title = self.get_certificate_attrib('cn')
 
             # If we haven't been given these details, extract them from the certificate
-            if 'org' not in self.config:
-                org_value = self.get_certificate_attrib('org')
-                if org_value is not None:
-                    self.config['org'] = org_value
-            if 'city' not in self.config:
-                city_value = self.get_certificate_attrib('city')
-                if city_value is not None:
-                    self.config['city'] = city_value
-            if 'state' not in self.config:
-                state_value = self.get_certificate_attrib('state')
-                if state_value is not None:
-                    self.config['state'] = state_value
-            if 'country' not in self.config:
-                country_value = self.get_certificate_attrib('country')
-                if country_value is not None:
-                    self.config['country'] = country_value
-            if 'email' not in self.config:
-                email_value = self.get_certificate_attrib('email')
-                if email_value is not None:
-                    self.config['email'] = email_value
+            for attr in self.config_attrs:
+                if attr not in self.config:
+                    value = self.get_certificate_attrib(attr)
+                    if value is not None:
+                        self.config[attr] = value
 
         else:
             # Generate
-            self.key_size = key_size[self.type]
-            self.private_key = self.generate_private_key()
+            self.private_key = self.generate_private_key(key_size=config['key_size'])
             self.csr = self.generate_csr(private_key=self.private_key, cert_cn=self.config['cn'])
-            self.certificate = self.sign_certificate(self.csr, self.private_key, self.csr)
+            self.certificate = self.sign_certificate(self.csr)
 
-            if self.type == 'ca':
-                self.ca_database.append(self.format_db_item(self.certificate))
-
-                self.config['next_serial'] += 1
-
-        self.initialised = True
-
-    def format_datetime(self, date, format='cert', timezone='UTC'):
+    def format_datetime(self, date, timezone='UTC'):
         """
         Format a datetime to match OpenSSL text
 
@@ -1600,197 +1212,9 @@ class CertificateBundle:
         Raises:
             None
         """
-        if format == 'cert':
-            format_string = f'%b %d %H:%M:%S %Y {timezone}'
-        elif format == 'cert_db':
-            format_string = f'%Y%m%d%H%M%SZ'
-        else:
-            error('Unknown date format', 1)
+        format_string = f'%b %d %H:%M:%S %Y {timezone}'
 
         return date.strftime(format_string)
-
-    def format_db_item(self, certificate):
-        """
-        Generate a certificate db item from a certificate
-
-        Args:
-            certificate: cryptography.hazmat.bindings._rust.x509.Certificate
-
-        Returns:
-            list
-
-        Raises:
-            None
-        """
-
-        expired = datetime.utcnow() > certificate.not_valid_after
-
-        if expired:
-            status = 'Expired'
-        else:
-            status = 'Valid'
-
-        cert_db_item = {
-            'serial': certificate.serial_number,
-            'cn': certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value,
-            'status': status,
-            'expiry_date': self.format_datetime(certificate.not_valid_after, format='cert_db'),
-            'revocation_date': '',
-            'subject': certificate.subject.rfc4514_string()
-        }
-
-        return cert_db_item
-
-    def generate_csr(self, cert_cn, private_key):
-        """
-        Generate a certificate signing request for the current Certificate Bundle
-
-        Args:
-            cert_cn (str): The CN to use for the CSR
-            private_key (str):  The private key to use in creating a CSR
-        
-        Returns:
-            cryptography.hazmat.bindings._rust.x509.CertificateSigningRequest
-
-        Raises:
-            None
-        """
-
-        x509_attributes = [x509.NameAttribute(x509.NameOID.COMMON_NAME, cert_cn)]
-
-        if 'country' in self.config:
-            x509_attributes.append(x509.NameAttribute(
-                NameOID.COUNTRY_NAME, self.config['country']))
-
-        if 'state' in self.config:
-            x509_attributes.append(x509.NameAttribute(
-                NameOID.STATE_OR_PROVINCE_NAME, self.config['state']))
-
-        if 'city' in self.config:
-            x509_attributes.append(x509.NameAttribute(
-                NameOID.LOCALITY_NAME, self.config['city']))
-
-        if 'org' in self.config:
-            x509_attributes.append(x509.NameAttribute(
-                NameOID.ORGANIZATION_NAME, self.config['org']))
-
-        if 'email' in self.config:
-            x509_attributes.append(x509.NameAttribute(
-                NameOID.EMAIL_ADDRESS, self.config['email']))
-
-
-        csr = x509.CertificateSigningRequestBuilder().subject_name(x509.Name(x509_attributes
-        )).sign(private_key, hashes.SHA256(), default_backend())
-
-        return csr
-
-    def generate_crl(self):
-        """
-        Generate a certificate revocation list in PEM format for the Certificate Authority
-
-        Args:
-            None
-
-        Returns:
-            string
-
-        Raises:
-            None
-        """
-
-        builder = x509.CertificateRevocationListBuilder()
-
-        builder = builder.issuer_name(x509.Name([
-            x509.NameAttribute(x509.NameOID.COMMON_NAME, self.get_certificate_attrib('cn')),
-        ]))
-
-        builder = builder.last_update(datetime.today())
-        builder = builder.next_update(datetime.today() + timedelta(int(self.config["crl_days"])))
-
-        for cert in self.certs_revoked:
-            serial_number = cert['serial']
-            revocation_date = datetime.strptime(cert['revocation_date'], '%Y%m%d%H%M%SZ')
-
-            revoked_cert = x509.RevokedCertificateBuilder().serial_number(
-                serial_number).revocation_date(revocation_date).build(default_backend())
-            builder = builder.add_revoked_certificate(revoked_cert)
-
-        crl = builder.sign(self.private_key, hashes.SHA256(), default_backend())
-
-        return crl.public_bytes(serialization.Encoding.PEM).decode('UTF-8')
-
-    def generate_private_key(self):
-        """
-        Generate and returns the RSA private key for the certificate bundle
-
-        Args:
-            None
-        
-        Returns:
-            cryptography.hazmat.backends.openssl.rsa._RSAPrivateKey
-
-        Raises:
-            None
-        """
-        public_exponent = 65537
-        backend = default_backend()
-
-        private_key = rsa.generate_private_key(
-            public_exponent = public_exponent,
-            key_size = self.key_size,
-            backend = backend
-        )
-
-        return private_key
-
-    def get_ca_cert(self):
-        """
-        Returns a PEM encoded CA certificate for the certificate bundle
-
-        Args:
-            None
-        
-        Returns:
-            str
-
-        Raises:
-            None
-        """
-        return self.ca_cert.public_bytes(serialization.Encoding.PEM).decode('utf-8')
-
-    def get_ca_database(self):
-        """
-        Return the CA certificate database
-
-        Args:
-            None
-
-        Returns:
-            list of dicts
-
-        Raises:
-            None
-        """
-
-        return self.ca_database
-
-    def get_csr(self):
-        """
-        Returns a PEM encoded certificate signing request for the certificate bundle
-
-        Args:
-            None
-        
-        Returns:
-            str
-
-        Raises:
-            None
-        """
-        if self.csr:
-            return self.csr.public_bytes(serialization.Encoding.PEM).decode('utf-8')
-        else:
-            return None
 
     def get_certificate(self):
         """
@@ -1805,6 +1229,7 @@ class CertificateBundle:
         Raises:
             None
         """
+
         return self.certificate.public_bytes(serialization.Encoding.PEM).decode('utf-8')
 
     def get_certificate_attrib(self, attrib):
@@ -1870,7 +1295,7 @@ class CertificateBundle:
 
         return attr_value
 
-    def get_config(self, attr):
+    def get_config(self, attr='all'):
         """
         Return the contents of a Certificate Bundle config item
 
@@ -1878,66 +1303,24 @@ class CertificateBundle:
             attr (str): The attribute to return
         
         Returns:
-            str
+            str or dict
 
         Raises:
             None
         """
-        if attr == 'days':
-            return self.config['days']
-        elif attr == 'org' and 'org' in self.config:
-            return self.config['org']
-        elif attr == 'email' and 'email' in self.config:
-            return self.config['email']
-        elif attr == 'city' and 'city' in self.config:
-            return self.config['city']
-        elif attr == 'state' and 'state' in self.config:
-            return self.config['state']
-        elif attr == 'country' and 'country' in self.config:
-            return self.config['country']
-        elif attr == 'ca_url' and 'ca_url' in self.config:
-            return self.config['ca_url']
-        elif attr == 'crl_url' and 'crl_url' in self.config:
-            return self.config['crl_url']
-        else:
-            return None
+        config = None
 
-    def get_default_config(self):
+        if attr in self.config_attrs and attr in self.config:
+            config = self.config[attr]
+
+        if attr == 'all':
+            config = {attr: self.config[attr] for attr in self.config_attrs if attr in self.config}
+
+        return config
+
+    def get_csr(self):
         """
-        Return the default config of this Certificate Bundle
-
-        Args:
-            attr (str): The attribute to return
-        
-        Returns:
-            dict
-
-        Raises:
-            None
-        """
-
-        # This is getting the config from the certificate, and not the stored value in 1Password
-        default_config = {}
-
-        if 'org' in self.config:
-            default_config['org'] = self.config['org']
-        if 'city' in self.config:
-            default_config['city'] = self.config['city']
-        if 'state' in self.config:
-            default_config['state'] = self.config['state']
-        if 'country' in self.config:
-            default_config['country'] = self.config['country']
-        if 'email' in self.config:
-            default_config['email'] = self.config['email']
-        if 'days' in self.config:
-            default_config['days'] = self.config['days']
-
-        return default_config
-
-    def get_next_serial(self):
-        """
-        This is used in a CA to identify certificates that have been signed by the CA. In OPCA
-        a CA object stores the next available certificate number for signing.
+        Returns a PEM encoded certificate signing request for the certificate bundle
 
         Args:
             None
@@ -1948,10 +1331,12 @@ class CertificateBundle:
         Raises:
             None
         """
-        if self.is_ca_certificate():
-            return self.next_serial
-        else:
-            return None
+        csr = None
+
+        if self.csr:
+            csr = self.csr.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+
+        return csr
 
     def get_private_key(self):
         """
@@ -1966,10 +1351,13 @@ class CertificateBundle:
         Raises:
             None
         """
-        return self.private_key.private_bytes(
-            Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
-            serialization.NoEncryption()
-        ).decode('utf-8')
+        if self.private_key:
+            return self.private_key.private_bytes(
+                Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption()
+            ).decode('utf-8')
+
+        return ""
 
     def get_title(self):
         """
@@ -2000,6 +1388,73 @@ class CertificateBundle:
             None
         """
         return self.type
+
+    def generate_csr(self, cert_cn, private_key):
+        """
+        Generate a certificate signing request for the current Certificate Bundle
+
+        Args:
+            cert_cn (str): The CN to use for the CSR
+            private_key (str):  The private key to use in creating a CSR
+        
+        Returns:
+            cryptography.hazmat.bindings._rust.x509.CertificateSigningRequest
+
+        Raises:
+            None
+        """
+
+        x509_attributes = [x509.NameAttribute(x509.NameOID.COMMON_NAME, cert_cn)]
+
+        if 'country' in self.config:
+            x509_attributes.append(x509.NameAttribute(
+                NameOID.COUNTRY_NAME, self.config['country']))
+
+        if 'state' in self.config:
+            x509_attributes.append(x509.NameAttribute(
+                NameOID.STATE_OR_PROVINCE_NAME, self.config['state']))
+
+        if 'city' in self.config:
+            x509_attributes.append(x509.NameAttribute(
+                NameOID.LOCALITY_NAME, self.config['city']))
+
+        if 'org' in self.config:
+            x509_attributes.append(x509.NameAttribute(
+                NameOID.ORGANIZATION_NAME, self.config['org']))
+
+        if 'email' in self.config:
+            x509_attributes.append(x509.NameAttribute(
+                NameOID.EMAIL_ADDRESS, self.config['email']))
+
+
+        csr = x509.CertificateSigningRequestBuilder().subject_name(x509.Name(x509_attributes
+        )).sign(private_key, hashes.SHA256(), default_backend())
+
+        return csr
+
+    def generate_private_key(self, key_size):
+        """
+        Generate and returns the RSA private key for the certificate bundle
+
+        Args:
+            None
+        
+        Returns:
+            cryptography.hazmat.backends.openssl.rsa._RSAPrivateKey
+
+        Raises:
+            None
+        """
+        public_exponent = 65537
+        backend = default_backend()
+
+        private_key = rsa.generate_private_key(
+            public_exponent = public_exponent,
+            key_size = key_size,
+            backend = backend
+        )
+
+        return private_key
 
     def import_certificate(self, certificate):
         """
@@ -2059,78 +1514,30 @@ class CertificateBundle:
         Raises:
             None
         """
-        valid = False
+        current_time = datetime.now()
 
-        # Does the private key match the certificate?
-        if self.private_key.public_key() == self.certificate.public_key():
-            # CA Status
-            if ((self.type == 'ca' and self.is_ca_certificate()) or
-                (self.type != 'ca' and not self.is_ca_certificate())):
-                valid = True
+        if not self.private_key:
+            # No private key, we only care about validity
+            return self.certificate.not_valid_before <= current_time <= self.certificate.not_valid_after
 
-        return valid
+        if self.private_key.public_key() != self.certificate.public_key():
+            # The private key does not match the certificate
+            return False
 
-    def process_ca_database(self):
-        """
-        Process the CA certificate database for expired certificates and return if it has changed
+        if self.type != 'ca' and self.is_ca_certificate():
+            return False
 
-        Args:
-            None
+        if self.type == 'ca' and not self.is_ca_certificate():
+            return False
 
-        Returns:
-            boolean
+        return self.certificate.not_valid_before <= current_time <= self.certificate.not_valid_after
 
-        Raises:
-            None
-        """
-
-        changed = False
-        tmp_ca_db = []
-        self.certs_revoked = []
-        self.certs_expires_soon = []
-        self.certs_valid = []
-
-        for cert in self.ca_database:
-            expiry_date = datetime.strptime(cert['expiry_date'], '%Y%m%d%H%M%SZ')
-
-            expired = datetime.utcnow() > expiry_date
-
-            expires_soon = datetime.utcnow() + timedelta(30) > expiry_date
-            revoked = bool(cert['revocation_date']) or (cert['status'] == 'Revoked')
-
-            if expired:
-                if cert['status'] != 'Expired':
-                    changed = True
-                    cert['status'] = 'Expired'
-            elif revoked:
-                if cert['status'] != 'Revoked':
-                    cert['status'] = 'Revoked'
-                    changed = True
-
-                self.certs_revoked.append(cert)
-
-            elif expires_soon:
-                self.certs_expires_soon.append(cert)
-
-            else:
-                self.certs_valid.append(cert)
-
-            tmp_ca_db.append(cert)
-
-        if changed:
-            self.ca_database = tmp_ca_db
-
-        return changed
-
-    def sign_certificate(self, csr, ca_private_key=None, ca_certificate=None, target=None):
+    def sign_certificate(self, csr):
         """
         Sign a csr to create a x509 certificate.
 
         Args:
             csr (cryptography x509.CertificateSigningRequest): Certificate Signing Request
-            ca_private_key (cryptography RSAPrivateKey): CA Private Key
-            ca_certificate (cryptography x509.Certificate): CA x509 Certificate
-            target ():
         
         Returns:
             cryptography.hazmat.bindings._rust.x509.Certificate
@@ -2139,39 +1546,724 @@ class CertificateBundle:
             None
         """
 
-        if not ca_private_key:
-            ca_private_key = self.private_key
-
-        if not ca_certificate:
-            ca_certificate = self.certificate
-
-        if not self.initialised:
-            target=self.type
-
         if self.type == 'ca':
-            certificate_serial = self.next_serial
-            self.next_serial += 1
-
-            if self.initialised:
-                delta = timedelta(int(self.config['days']))
-            else:
-                delta = timedelta(int(self.config['ca_days']))
+            certificate_serial = self.config['next_serial']
+            delta = timedelta(int(self.config['ca_days']))
         else:
             certificate_serial = x509.random_serial_number()
-            delta = timedelta(int(self.config['days']))
+            delta = timedelta(int(30))
 
         builder = x509.CertificateBuilder().subject_name(csr.subject)
-        builder = builder.issuer_name(ca_certificate.subject)
+        builder = builder.issuer_name(csr.subject)
         builder = builder.public_key(csr.public_key())
         builder = builder.serial_number(int(certificate_serial))
         builder = builder.not_valid_before(datetime.utcnow())
         builder = builder.not_valid_after(datetime.utcnow() + delta)
         builder = builder.add_extension(
-                x509.SubjectKeyIdentifier.from_public_key(ca_private_key.public_key()),
+                x509.SubjectKeyIdentifier.from_public_key(self.private_key.public_key()),
                 critical=False)
         builder = builder.add_extension(
                 x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(
-                x509.SubjectKeyIdentifier.from_public_key(ca_private_key.public_key())),
+                x509.SubjectKeyIdentifier.from_public_key(self.private_key.public_key())),
+                critical=False)
+
+        if self.type == 'ca':
+            builder = builder.add_extension(
+                x509.BasicConstraints(ca=True, path_length=None), critical=True)
+
+            builder = builder.add_extension(x509.KeyUsage(
+                    digital_signature=False,
+                    key_encipherment=False,
+                    key_agreement=False,
+                    data_encipherment=False,
+                    key_cert_sign=True,
+                    crl_sign=True,
+                    content_commitment=False,
+                    encipher_only=False,
+                    decipher_only=False), critical=True,
+                    )
+        else:
+            builder = builder.add_extension(
+                x509.BasicConstraints(ca=False, path_length=None), critical=False)
+
+            if self.type == 'vpnclient':
+                builder = builder.add_extension(x509.KeyUsage(
+                        digital_signature=True,
+                        key_encipherment=False,
+                        key_agreement=False,
+                        data_encipherment=False,
+                        key_cert_sign=False,
+                        crl_sign=False,
+                        content_commitment=False,
+                        encipher_only=False,
+                        decipher_only=False), critical=True,
+                        )
+                builder = builder.add_extension(x509.ExtendedKeyUsage([
+                        x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
+                        ]), critical=True)
+
+            elif self.type == 'vpnserver':
+                builder = builder.add_extension(x509.KeyUsage(
+                        digital_signature=True,
+                        key_encipherment=True,
+                        key_agreement=False,
+                        data_encipherment=False,
+                        key_cert_sign=False,
+                        crl_sign=False,
+                        content_commitment=False,
+                        encipher_only=False,
+                        decipher_only=False), critical=True,
+                        )
+                builder = builder.add_extension(x509.ExtendedKeyUsage([
+                        x509.oid.ExtendedKeyUsageOID.SERVER_AUTH,
+                        ]), critical=True)
+
+            elif self.type == 'webserver':
+                builder = builder.add_extension(x509.KeyUsage(
+                        digital_signature=True,
+                        key_encipherment=True,
+                        key_agreement=False,
+                        data_encipherment=False,
+                        key_cert_sign=False,
+                        crl_sign=False,
+                        content_commitment=False,
+                        encipher_only=False,
+                        decipher_only=False), critical=True,
+                        )
+                builder = builder.add_extension(x509.ExtendedKeyUsage([
+                        x509.oid.ExtendedKeyUsageOID.SERVER_AUTH,
+                        x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
+                        ]), critical=False)
+
+                dns_names = [x509.DNSName(args.cn)]
+
+                if args.alt:
+                    dns_names.extend([x509.DNSName(hostname) for hostname in args.alt])
+
+                    builder = builder.add_extension(
+                        x509.SubjectAlternativeName(dns_names), critical=False,)
+
+                # The CA and CRL URLs are stored in the CA config. When this object is instantiated
+                # it will self sign and not have those variables. If it is signed by a CA, the URLs
+                # will be pulled from the config.
+                if 'crl_url' in self.config:
+                    crl_distribution_points = [
+                        x509.DistributionPoint(
+                            full_name=[UniformResourceIdentifier(self.config["crl_url"])],
+                            relative_name=None,
+                            reasons=None,
+                            crl_issuer=None
+                        )
+                    ]
+
+                    builder = builder.add_extension(
+                        x509.CRLDistributionPoints(crl_distribution_points),
+                        critical=False)
+
+                if 'ca_url' in self.config:
+                    aia_access_descriptions = [
+                        x509.AccessDescription(
+                            access_method=AuthorityInformationAccessOID.CA_ISSUERS,
+                            access_location=x509.UniformResourceIdentifier(self.config["ca_url"])
+                        )
+                    ]
+
+                    builder = builder.add_extension(
+                        x509.AuthorityInformationAccess(aia_access_descriptions),
+                        critical=False)
+            else:
+                error('Unknown certificate type. Aborting.', 1)
+
+        certificate = builder.sign(
+            private_key=self.private_key, algorithm=hashes.SHA256(),
+            backend=default_backend()
+        )
+
+        return certificate
+
+    def update_certificate(self, certificate):
+        """
+        Replace the x509 certificate for the certificate bundle with the certificate provided
+
+        Args:
+            certificate (cryptography Certificate): x509 certificate
+        
+        Returns:
+            None
+
+        Raises:
+            None
+        """
+
+        # Does the private key match the certificate?
+        if self.private_key.public_key() == certificate.public_key():
+            self.certificate = certificate
+        else:
+            error('Signed certificate does not match the private key', 1)
+
+
+class CertificateAuthority:
+    """ Class to act as a Certificate Authority """
+    def __init__(self, one_password, config, op_config):
+        """
+        Construct a certificate authority object.
+
+        Args:
+            one_password (OpObject): An initialised 1Password object
+            command (str): How we should acquire a certificate authority key and certificate
+            config (dict): Configuration items
+        """
+        self.ca_certbundle = None
+        self.ca_config = None
+        self.ca_database = None      # The equivalent of index.txt. Dict keyed by serial
+        self.ca_database_cn = None   # Dict keyed by cn. Essentially an index to ca_database
+        self.certs_revoked = None
+        self.certs_expires_soon = None
+        self.certs_valid = None
+        self.next_serial = None
+        self.one_password = one_password
+        self.op_config = op_config
+        self.config_attrs = (
+            'org',
+            'email',
+            'city',
+            'state',
+            'country',
+            'ca_url',
+            'crl_url',
+            'days',
+            'crl_days'
+        )
+
+        if config['command'] == 'init':
+            self.ca_database = []
+            self.ca_database_cn = {}
+            self.ca_config = config
+            self.next_serial = int(self.ca_config['next_serial'])
+
+            if one_password.item_exists(self.op_config['ca_title']):
+                error('Certificate Authority already exists. Aborting.', 1)
+
+            self.ca_certbundle = CertificateBundle(cert_type='ca',
+                                      item_title=self.op_config['ca_title'],
+                                      import_certbundle=False,
+                                      config=self.ca_config)
+
+            self.next_serial += 1
+
+            self.ca_database.append(self.format_db_item(self.ca_certbundle.certificate))
+
+            self.store_certbundle(self.ca_certbundle)
+
+        elif config['command'] == 'import':
+            self.ca_database = []
+            self.ca_database_cn = {}
+            self.ca_config = config
+            self.next_serial = int(self.ca_config['next_serial'])
+
+            if one_password.item_exists(self.op_config['ca_title']):
+                error('Certificate Authority already exists. Aborting.', 1)
+
+
+            self.ca_certbundle = CertificateBundle(cert_type='ca',
+                                      item_title=self.op_config['ca_title'],
+                                      import_certbundle=True,
+                                      config=self.ca_config)
+
+            self.ca_database.append(self.format_db_item(self.ca_certbundle.certificate))
+
+            self.store_certbundle(self.ca_certbundle)
+
+        elif config['command'] == 'retrieve':
+            if not one_password.item_exists(self.op_config['ca_title']):
+                error('Certificate Authority does not exist. Aborting.', 1)
+
+            self.ca_certbundle = self.retrieve_certbundle(item_title=self.op_config['ca_title'])
+
+            self.retrieve_ca_database()
+            if self.process_ca_database():
+                self.store_ca_database()
+
+        elif config['command'] == 'rebuild-ca-database':
+            self.ca_database = []
+            self.ca_database_cn = {}
+            self.ca_config = config
+            self.next_serial = self.ca_config.get('next_serial')
+
+            # If present, it needs to be cast to an int
+            if self.next_serial is not None:
+                self.next_serial = int(self.next_serial)
+
+            if not one_password.item_exists(self.op_config['ca_title']):
+                error('Certificate Authority does not exist. Aborting.', 1)
+
+            self.ca_certbundle = self.retrieve_certbundle(item_title=self.op_config['ca_title'])
+
+            if self.one_password.item_exists(self.op_config['ca_database_title']):
+                error('CA database exists. Aborting', 1)
+
+            self.ca_database.append(self.format_db_item(self.ca_certbundle.certificate))
+
+            self.rebuild_ca_database()
+
+        else:
+            error('Unknown CA command', 1)
+
+    def add_ca_database_item(self, certificate):
+        """
+        Add an item to the CA database, process and store.
+
+        Args:
+            certificate (Certfqwfwe): The certificate to add to the database
+        
+        Returns:
+            Bool
+
+        Raises:
+            None
+        """
+
+        certificate_cn = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+        certificate_serial = certificate.serial_number
+
+        if certificate_serial in self.ca_database:
+            return False
+
+        self.process_ca_database()
+
+        self.ca_database.append(self.format_db_item(certificate))
+        self.store_ca_database()
+
+        self.ca_database_cn[certificate_cn] = certificate_serial
+
+        return True
+
+    def format_datetime(self, date):
+        """
+        Format a datetime to match OpenSSL text
+
+        Args:
+            date (datetime): The datetime object we are working with
+        
+        Returns:
+            str
+
+        Raises:
+            None
+        """
+        format_string = '%Y%m%d%H%M%SZ'
+
+        return date.strftime(format_string)
+
+    def format_db_item(self, certificate):
+        """
+        Format a certificate db item from a certificate
+
+        Args:
+            certificate: cryptography.hazmat.bindings._rust.x509.Certificate
+
+        Returns:
+            list
+
+        Raises:
+            None
+        """
+
+        expired = datetime.utcnow() > certificate.not_valid_after
+
+        if expired:
+            status = 'Expired'
+        else:
+            status = 'Valid'
+
+        cert_db_item = {
+            'serial': certificate.serial_number,
+            'cn': certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value,
+            'status': status,
+            'expiry_date': self.format_datetime(certificate.not_valid_after),
+            'revocation_date': '',
+            'subject': certificate.subject.rfc4514_string()
+        }
+
+        return cert_db_item
+
+    def get_certificate(self):
+        """
+        Returns the CA certificate in various formats
+
+        Args:
+            None
+        
+        Returns:
+            str
+
+        Raises:
+            None
+        """
+        return self.ca_certbundle.get_certificate()
+
+    def generate_crl(self):
+        """
+        Generate a certificate revocation list in PEM format for the Certificate Authority
+
+        Args:
+            None
+
+        Returns:
+            string
+
+        Raises:
+            None
+        """
+
+        builder = x509.CertificateRevocationListBuilder()
+
+        builder = builder.issuer_name(x509.Name([
+            x509.NameAttribute(x509.NameOID.COMMON_NAME, self.ca_certbundle.get_certificate_attrib('cn')),
+        ]))
+
+        builder = builder.last_update(datetime.today())
+        builder = builder.next_update(datetime.today() + timedelta(int(self.ca_config["crl_days"])))
+
+        for cert in self.certs_revoked:
+            serial_number = cert['serial']
+            revocation_date = datetime.strptime(cert['revocation_date'], '%Y%m%d%H%M%SZ')
+
+            revoked_cert = x509.RevokedCertificateBuilder().serial_number(
+                serial_number).revocation_date(revocation_date).build(default_backend())
+            builder = builder.add_revoked_certificate(revoked_cert)
+
+        crl = builder.sign(self.ca_certbundle.private_key, hashes.SHA256(), default_backend())
+
+        return crl.public_bytes(serialization.Encoding.PEM).decode('UTF-8')
+
+    def generate_certificate_bundle(self, cert_type, item_title, config):
+        """
+        Creates a certificate bundle from configuration
+
+        Args:
+            cert_type (str): Certificate Type (ca, host, vpnclient, vpnserver)
+            item_title (str): The name to object will be stored as in 1Password
+            config (dict): A dictionary of certificate configuration items
+
+        Returns:
+            CertificateBundle
+
+        Raises:
+            None
+        """
+        cert_bundle = CertificateBundle(cert_type=cert_type,
+                                        item_title=item_title,
+                                        import_certbundle=False,
+                                        config=config)
+
+        pem_csr = cert_bundle.get_csr().encode('utf-8')
+        csr = x509.load_pem_x509_csr(pem_csr, default_backend())
+
+        signed_certificate = self.sign_certificate(csr=csr, target=args.cert_type)
+
+        cert_bundle.update_certificate(signed_certificate)
+
+        if cert_bundle.is_valid():
+            self.store_certbundle(cert_bundle)
+
+        return cert_bundle
+
+    def import_certificate_bundle(self, cert_type, item_title, config):
+        """
+        Imports a certificate bundle from variables
+
+        Args:
+            cert_type (str): Certificate Type (ca, host, vpnclient, vpnserver)
+            item_title (str): The name to object will be stored as in 1Password
+            config (dict): A dictionary of certificate configuration items
+
+        Returns:
+            CertificateBundle
+
+        Raises:
+            None
+        """
+
+        obj = CertificateBundle(cert_type=cert_type,
+                                item_title=item_title,
+                                import_certbundle=True,
+                                config=config)
+
+        if item_title is None:
+            item_title = obj.get_certificate_attrib('cn')
+
+        title(f'Checking [ { OPCA_COLOUR_BRIGHT }{ item_title }{ COLOUR["reset"] } ] certificate bundle', 9)
+
+        if obj.private_key:
+            print_result(obj.is_valid())
+        else:
+            print_result(False, failed_msg='NOPRIV')
+
+        return obj
+
+    def is_valid(self):
+        """
+        Is the certifiate authority object valid
+
+        Args:
+            None
+
+        Returns:
+            bool
+
+        Raises:
+            None
+        """
+
+        return self.ca_certbundle.is_valid()
+
+    def process_ca_database(self):
+        """
+        Process the CA database.
+         - The status of certifiates might change due to time
+         - Gather a list of
+           - Certificates revoked
+           - Certificates expiring soon
+           - Certificates valid
+
+        Args:
+            None
+
+        Returns:
+            bool: Did the database chnage post-processing
+
+        Raises:
+            None
+        """
+        changed = False
+        db_error = False
+        tmp_ca_db = []
+        self.certs_revoked = []
+        self.certs_expires_soon = []
+        self.certs_valid = []
+
+        if self.ca_database is None:
+            db_error = True
+
+        else:
+
+            for cert in self.ca_database:
+                skip = False
+
+                try:
+                    expiry_date = datetime.strptime(cert['expiry_date'], '%Y%m%d%H%M%SZ')
+
+                    expired = datetime.utcnow() > expiry_date
+
+                    expires_soon = datetime.utcnow() + timedelta(30) > expiry_date
+                    revoked = bool(cert['revocation_date']) or (cert['status'] == 'Revoked')
+
+                except KeyError:
+                    warning(f"'expiry_date' key not found for certificate { cert['serial'] }.")
+                    skip = True
+                    db_error = True
+                except ValueError:
+                    warning(f"Unable to parse 'expiry_date' for certificate { cert['serial'] }.")
+                    skip = True
+                    db_error = True
+
+
+
+                if not skip:
+                    if expired:
+                        if cert['status'] != 'Expired':
+                            changed = True
+                            cert['status'] = 'Expired'
+                    elif revoked:
+                        if cert['status'] != 'Revoked':
+                            cert['status'] = 'Revoked'
+                            changed = True
+
+                        self.certs_revoked.append(cert)
+
+                    elif expires_soon:
+                        self.certs_expires_soon.append(cert)
+
+                    else:
+                        self.certs_valid.append(cert)
+
+                    tmp_ca_db.append(cert)
+
+        if changed and not db_error:
+            self.ca_database = tmp_ca_db
+            self.store_ca_database()
+
+        return changed
+
+    def rebuild_ca_database(self):
+        """
+        Rebuild the CA certificate database from 1Password
+
+        Args:
+            None
+
+        Returns:
+            dict: The CA database as rebuilt
+
+        Raises:
+            None
+        """
+        result_dict = {}
+        max_serial = 0
+
+        result = self.one_password.item_list(categories=self.op_config['category'])
+
+        if result.returncode != 0:
+            error(error_msg=result.stderr, exit_code=result.returncode)
+
+        op_items = json.loads(result.stdout)
+
+        for op_item in op_items:
+            item_title = op_item['title']
+
+            cert_bundle = self.retrieve_certbundle(item_title)
+
+            if cert_bundle is None:
+                warning(f'{ item_title } is not a certificate. Ignoring.')
+            else:
+                # Actual certificate
+                cert_serial = cert_bundle.get_certificate_attrib('serial')
+                result_dict[cert_serial] = cert_bundle.certificate
+
+        for serial, certificate in sorted(result_dict.items()):
+            self.add_ca_database_item(certificate=certificate)
+
+            if serial > max_serial:
+                max_serial = serial + 1
+
+        if self.next_serial:
+            if max_serial >= self.next_serial:
+                warning(f'The next serial is { self.next_serial } but the largest serial number seen is { max_serial }')
+
+        else:
+            self.next_serial = max_serial + 1
+
+        title(f'Next serial is [ { OPCA_COLOUR_BRIGHT }{ self.next_serial }{ COLOUR["reset"] } ]', 8)
+        self.store_ca_database()
+
+    def retrieve_ca_database(self):
+        """
+        Retrieve the CA certificate database from 1Password
+
+        Args:
+            None
+
+        Returns:
+            dict: The CA database as retrieved
+
+        Raises:
+            None
+        """
+        self.ca_config = {}
+        self.ca_database_cn = {}
+        result_dict = {}
+        result = self.one_password.get_item(self.op_config['ca_database_title'])
+
+        if result.returncode == 0:
+            loaded_ca_db = json.loads(result.stdout)
+
+            for field in loaded_ca_db['fields']:
+                if 'section' in field:
+                    section_label = field['section']['label']
+                    field_label = field['label']
+                    field_value = field.get('value', '')
+
+                    if section_label == 'config':
+                        if field_label == 'next_serial':
+                            self.next_serial = int(field_value)
+                        elif field_label in self.config_attrs:
+                            self.ca_config[field_label] = field_value
+                    elif section_label not in result_dict:
+                        result_dict[section_label] = {'serial': int(section_label)}
+
+                    if section_label != 'config':
+                        if field_label in ('status', 'cn', 'subject', 'expiry_date', 'revocation_date'):
+                            result_dict[section_label][field_label] = field_value
+
+                    # Build the index
+                    if field_label == 'cn' and field_value not in self.ca_database_cn:
+                        self.ca_database_cn[field_value] = section_label
+
+            self.ca_database = list(result_dict.values())
+
+        return self.ca_database
+
+    def retrieve_certbundle(self, item_title):
+        """
+        Imports a certificate bundle from 1Password
+
+        Args:
+            item_title (str): The 1Password object that contains a certificate bundle
+            ca (bool): Is the certificate bundle our CA?
+
+        Returns:
+            CertificateBundle if the retrieved object is a certificate bundle, otherwise None
+
+        Raises:
+            None
+        """
+        cert_config = {}
+        cert_type = None
+
+        result = self.one_password.get_item(item_title)
+
+        if result.returncode != 0:
+            error('Something went wrong retrieving the certificate bundle', 1)
+
+        loaded_object = json.loads(result.stdout)
+
+        for field in loaded_object['fields']:
+            if field['label'] == 'certificate':
+                cert_config['certificate'] = field['value'].encode('utf-8')
+            elif field['label'] == 'private_key':
+                cert_config['private_key'] = field['value'].encode('utf-8')
+            elif field['label'] == 'type':
+                cert_config['cert_type'] = field['value']
+                cert_type = field['value']
+
+        if 'certificate' not in cert_config:
+            return None
+
+        return self.import_certificate_bundle(cert_type=cert_type,
+                                              item_title=item_title,
+                                              config=cert_config)
+
+    def sign_certificate(self, csr, target=None):
+        """
+        Sign a csr to create a x509 certificate.
+
+        Args:
+            csr (cryptography x509.CertificateSigningRequest): Certificate Signing Request
+            target (): The type of x509 certificate to create
+        
+        Returns:
+            cryptography.hazmat.bindings._rust.x509.Certificate
+
+        Raises:
+            None
+        """
+
+        certificate_serial = self.next_serial
+        delta = timedelta(int(self.ca_config['days']))
+
+        builder = x509.CertificateBuilder().subject_name(csr.subject)
+        builder = builder.issuer_name(self.ca_certbundle.certificate.subject)
+        builder = builder.public_key(csr.public_key())
+        builder = builder.serial_number(int(certificate_serial))
+        builder = builder.not_valid_before(datetime.utcnow())
+        builder = builder.not_valid_after(datetime.utcnow() + delta)
+        builder = builder.add_extension(
+                x509.SubjectKeyIdentifier.from_public_key(self.ca_certbundle.private_key.public_key()),
+                critical=False)
+        builder = builder.add_extension(
+                x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(
+                x509.SubjectKeyIdentifier.from_public_key(self.ca_certbundle.private_key.public_key())),
                 critical=False)
 
         if target == 'ca':
@@ -2253,10 +2345,10 @@ class CertificateBundle:
                 # The CA and CRL URLs are stored in the CA config. When this object is instantiated
                 # it will self sign and not have those variables. If it is signed by a CA, the URLs
                 # will be pulled from the config.
-                if 'crl_url' in self.config:
+                if 'crl_url' in self.ca_config:
                     crl_distribution_points = [
                         x509.DistributionPoint(
-                            full_name=[UniformResourceIdentifier(self.config["crl_url"])],
+                            full_name=[UniformResourceIdentifier(self.ca_config["crl_url"])],
                             relative_name=None,
                             reasons=None,
                             crl_issuer=None
@@ -2267,11 +2359,11 @@ class CertificateBundle:
                         x509.CRLDistributionPoints(crl_distribution_points),
                         critical=False)
 
-                if 'ca_url' in self.config:
+                if 'ca_url' in self.ca_config:
                     aia_access_descriptions = [
                         x509.AccessDescription(
                             access_method=AuthorityInformationAccessOID.CA_ISSUERS,
-                            access_location=x509.UniformResourceIdentifier(self.config["ca_url"])
+                            access_location=x509.UniformResourceIdentifier(self.ca_config["ca_url"])
                         )
                     ]
 
@@ -2282,43 +2374,110 @@ class CertificateBundle:
                 error('Unknown certificate type. Aborting.', 1)
 
         certificate = builder.sign(
-            private_key=ca_private_key, algorithm=hashes.SHA256(),
+            private_key=self.ca_certbundle.private_key, algorithm=hashes.SHA256(),
             backend=default_backend()
         )
 
-        if self.type == 'ca':
-            self.process_ca_database()
-
-            self.ca_database.append(self.format_db_item(certificate))
+        self.next_serial += 1
 
         return certificate
 
-    def update_certificate(self, certificate):
+    def store_certbundle(self, certbundle):
         """
-        Replace the x509 certificate for the certificate bundle with the certificate provided
+        Store a certificate bundle into 1Password
 
         Args:
-            certificate (cryptography Certificate): x509 certificate
-        
+            certbundle (CertificateBundle): The certificate to store
+
         Returns:
-            None
+            subprocess.CompletedProcess: Output from 1Password CLI
 
         Raises:
             None
         """
-        self.certificate = certificate
+
+        item_title = certbundle.get_title()
+
+        if certbundle.is_valid() and item_title not in self.ca_database_cn:
+            self.add_ca_database_item(certbundle.certificate)
+
+            attributes = [f'{self.op_config["cert_type_item"]}=' + \
+                                f'{certbundle.get_type()}',
+                          f'{self.op_config["cn_item"]}=' + \
+                                f'{certbundle.get_certificate_attrib("cn")}',
+                          f'{self.op_config["subject_item"]}=' + \
+                                f'{certbundle.get_certificate_attrib("subject")}',
+                          f'{self.op_config["key_item"]}=' + \
+                                f'{certbundle.get_private_key()}',
+                          f'{self.op_config["cert_item"]}=' + \
+                                f'{certbundle.get_certificate()}',
+                          f'{self.op_config["start_date_item"]}=' + \
+                                f'{certbundle.get_certificate_attrib("not_before")}',
+                          f'{self.op_config["expiry_date_item"]}=' + \
+                                f'{certbundle.get_certificate_attrib("not_after")}',
+                          f'{self.op_config["serial_item"]}=' + \
+                                f'{certbundle.get_certificate_attrib("serial")}',
+                          f'{self.op_config["csr_item"]}=' + \
+                                f'{certbundle.get_csr() or ""}'
+            ]
+
+            result = self.one_password.store_item(action='create',
+                                     item_title=item_title,
+                                     attributes=attributes)
+        else:
+            error('Certificate Object is invalid or already exists. Unable to store in 1Password', 1)
+
+        return result
+
+    def store_ca_database(self):
+        """
+        Store a CA certificate database into 1Password
+
+        Args:
+            None
+
+        Returns:
+            subprocess.CompletedProcess: Output from 1Password CLI
+
+        Raises:
+            None
+        """
+
+        attributes = [
+            f'{DEFAULT_OP_CONF["next_serial_item"]}={self.next_serial}',
+            f'{DEFAULT_OP_CONF["org_item"]}={self.ca_config.get("org", "")}',
+            f'{DEFAULT_OP_CONF["email_item"]}={self.ca_config.get("email", "")}',
+            f'{DEFAULT_OP_CONF["city_item"]}={self.ca_config.get("city", "")}',
+            f'{DEFAULT_OP_CONF["state_item"]}={self.ca_config.get("state", "")}',
+            f'{DEFAULT_OP_CONF["country_item"]}={self.ca_config.get("country", "")}',
+            f'{DEFAULT_OP_CONF["ca_url_item"]}={self.ca_config.get("ca_url", "")}',
+            f'{DEFAULT_OP_CONF["crl_url_item"]}={self.ca_config.get("crl_url", "")}',
+            f'{DEFAULT_OP_CONF["days_item"]}={self.ca_config.get("days", "")}',
+            f'{DEFAULT_OP_CONF["crl_days_item"]}={self.ca_config.get("crl_days", "")}',
+        ]
+
+        for cert in self.ca_database:
+            attributes.append(f'{cert["serial"]}.cn[text]={cert["cn"]}')
+            attributes.append(f'{cert["serial"]}.status[text]={cert["status"]}')
+            attributes.append(f'{cert["serial"]}.expiry_date[text]={cert["expiry_date"]}')
+            attributes.append(f'{cert["serial"]}.revocation_date[text]={cert["revocation_date"]}')
+            attributes.append(f'{cert["serial"]}.subject[text]={cert["subject"]}')
+
+        result = self.one_password.edit_or_create(item_title=self.op_config['ca_database_title'],
+                                attributes=attributes)
+
+        return result
 
 
 class Op:
-    def __init__(self, account=None, binary=OP_BIN, vault=None, config=DEFAULT_OP_CONF):
+    """ Class to act on 1Password CLI """
+    def __init__(self, account=None, binary=OP_BIN, vault=None):
         self.account = account
         self.vault = vault
         self.bin = binary
-        self.ca_exists = False
-        self.config = config
 
         if not os.path.isfile(self.bin) and os.access(self.bin, os.X_OK):
-            print("Error: No 1Password-CLI executable. Is it installed?")
+            error('Error: No 1Password-CLI executable. Is it installed?', 1)
 
         signin_command = [self.bin, 'signin']
 
@@ -2331,31 +2490,12 @@ class Op:
             error(result.stderr, result.returncode)
             sys.exit(result.returncode)
 
-        if self.item_exists(self.config['ca_title']):
-            self.ca_exists = True
-
-    def ca_exists(self):
-        """
-        Test to see if a Certificate Authority object exists in 1Password
-
-        Args:
-            None
-
-        Returns:
-            bool: Existance of a 1Password CA
-
-        Raises:
-            None
-        """
-
-        return self.ca_exists
-
-    def edit_or_create(self, title, attributes):
+    def edit_or_create(self, item_title, attributes):
         """
         CRUD helper. Store an item by either editing or creating
 
         Args:
-            title (str): The title of the 1Password object
+            item_title (str): The title of the 1Password object
             attributes (dict): The object attributes to write to 1Password
 
         Returns:
@@ -2366,12 +2506,12 @@ class Op:
         """
 
         result = self.store_item(action='edit',
-                            title=title,
+                            item_title=item_title,
                             attributes=attributes)
 
         if result.returncode != 0:
             result = self.store_item(action='create',
-                                title=title,
+                                item_title=item_title,
                                 attributes=attributes)
 
         return result
@@ -2394,22 +2534,22 @@ class Op:
 
         return result
 
-    def get_item(self, title, output_format='json'):
+    def get_item(self, item_title, output_format='json'):
         """
         Retrieve the contents of an item at a given 1Password secrets url
 
         Args:
-            title (str): The title of the 1Password object
+            item_title (str): The title of the 1Password object
             output_format (str): The format 1Password CLI should give
 
         Returns:
-            str: JSON contents of the item
+            subprocess.CompletedProcess
 
         Raises:
             None
         """
 
-        result = run_command([self.bin, 'item', 'get', title, f'--vault={self.vault}',
+        result = run_command([self.bin, 'item', 'get', item_title, f'--vault={self.vault}',
                                                               f'--format={output_format}'])
 
         return result
@@ -2467,6 +2607,25 @@ class Op:
 
         return bool(result.returncode == 0)
 
+    def item_list(self, categories, output_format='json'):
+        """
+        List all items in the current vault
+
+        Args:
+            categories (str): A comma seperated list of 1Password categories 
+
+        Returns:
+            subprocess.CompletedProcess
+
+        Raises:
+            None
+        """
+        result = run_command([self.bin, 'item', 'list', f'--vault={self.vault}',
+                                                        f'--categories={categories}',
+                                                        f'--format={output_format}'])
+
+        return result
+
     def read_item(self, url):
         """
         Retrieve the contents of an item at a given 1Password secrets url
@@ -2507,118 +2666,12 @@ class Op:
 
         return url
 
-    def store_cert_bundle(self, obj):
-        """
-        Store a certificate bundle into 1Password
-
-        Args:
-            obj (CertificateBundle): A certificate bundle object
-
-        Returns:
-            subprocess.CompletedProcess: Output from 1Password CLI
-
-        Raises:
-            None
-        """
-
-        if obj.is_valid():
-            title = obj.get_title()
-
-            attributes = [f'{self.config["cert_type_item"]}=' + \
-                                f'{obj.get_type()}',
-                          f'{self.config["cn_item"]}=' + \
-                                f'{obj.get_certificate_attrib("cn")}',
-                          f'{self.config["subject_item"]}=' + \
-                                f'{obj.get_certificate_attrib("subject")}',
-                          f'{self.config["key_item"]}=' + \
-                                f'{obj.get_private_key()}',
-                          f'{self.config["cert_item"]}=' + \
-                                f'{obj.get_certificate()}',
-                          f'{self.config["start_date_item"]}=' + \
-                                f'{obj.get_certificate_attrib("not_before")}',
-                          f'{self.config["expiry_date_item"]}=' + \
-                                f'{obj.get_certificate_attrib("not_after")}',
-                          f'{self.config["serial_item"]}=' + \
-                                f'{obj.get_certificate_attrib("serial")}'
-            ]
-
-            if obj.get_type() == 'ca':
-                attributes.append(f'{self.config["next_serial_item"]}=' + \
-                                        f'{obj.get_next_serial()}')
-                if obj.get_config('org'):
-                    attributes.append(f'{self.config["org_item"]}=' + \
-                                        f'{obj.get_config("org")}')
-                if obj.get_config('email'):
-                    attributes.append(f'{self.config["email_item"]}=' + \
-                                        f'{obj.get_config("email")}')
-                if obj.get_config('city'):
-                    attributes.append(f'{self.config["city_item"]}=' + \
-                                        f'{obj.get_config("city")}')
-                if obj.get_config('state'):
-                    attributes.append(f'{self.config["state_item"]}=' + \
-                                        f'{obj.get_config("state")}')
-                if obj.get_config('country'):
-                    attributes.append(f'{self.config["country_item"]}=' + \
-                                        f'{obj.get_config("country")}')
-                if obj.get_config('ca_url'):
-                    attributes.append(f'{self.config["ca_url_item"]}=' + \
-                                        f'{obj.get_config("ca_url")}')
-                if obj.get_config('crl_url'):
-                    attributes.append(f'{self.config["crl_url_item"]}=' + \
-                                        f'{obj.get_config("crl_url")}')
-                attributes.append(f'{self.config["days_item"]}=' + \
-                                        f'{obj.get_config("days")}')
-                attributes.append(f'{self.config["crl_days_item"]}=7')
-            else:
-                if obj.get_csr() is not None:
-                    attributes.append(f'{self.config["csr_item"]}=' + \
-                                            f'{obj.get_csr()}')
-
-            result = self.store_item(action='create',
-                                     title=title,
-                                     attributes=attributes)
-        else:
-            error('Certificate Object is invalid. Unable to store in 1Password', 1)
-
-        return result
-
-    def store_ca_database(self, obj):
-        """
-        Store a CA certificate database into 1Password
-
-        Args:
-            obj (CertificateBundle): A certificate bundle object
-
-        Returns:
-            subprocess.CompletedProcess: Output from 1Password CLI
-
-        Raises:
-            None
-        """
-
-        if obj.get_type() != 'ca':
-            error('Object is not a CA. Cannot store CA database', 2)
-        else:
-            attributes = []
-
-            for cert in obj.get_ca_database():
-                attributes.append(f'{cert["serial"]}.cn[text]={cert["cn"]}')
-                attributes.append(f'{cert["serial"]}.status[text]={cert["status"]}')
-                attributes.append(f'{cert["serial"]}.expiry_date[text]={cert["expiry_date"]}')
-                attributes.append(f'{cert["serial"]}.revocation_date[text]={cert["revocation_date"]}')
-                attributes.append(f'{cert["serial"]}.subject[text]={cert["subject"]}')
-
-            result = self.edit_or_create(title=DEFAULT_OP_CONF['ca_database_title'],
-                                    attributes=attributes)
-
-            return result
-
-    def store_document(self, title, filename, str_in, action='create'):
+    def store_document(self, item_title, filename, str_in, action='create'):
         """
         Store a document in 1Password
 
         Args:
-            title (str): 1Password item title
+            item_title (str): 1Password item title
             filename (str): The filename to store as metadata in 1Password
             str_in (str): The contents of a file to store as a document
             action (str): CRUD action
@@ -2631,7 +2684,7 @@ class Op:
         """
 
         if action == 'create':
-            cmd = [self.bin, 'document', action, f'--title={title}',
+            cmd = [self.bin, 'document', action, f'--title={item_title}',
                                                  f'--vault={self.vault}',
                                                  f'--file-name={filename}']
         else:
@@ -2641,14 +2694,15 @@ class Op:
 
         return result
 
-    def store_item(self, title, attributes, action='create'):
+    def store_item(self, item_title, attributes, action='create', category='Secure Note'):
         """
         Store an item in 1Password
 
         Args:
-            title (str): 1Password item title
+            item_title (str): 1Password item title
             attributes (list): A list of strings containing the item attributes
             action (str): CRUD action
+            category (str): The 1Password category to use. Secure Note is the default.
 
         Returns:
             subprocess.CompletedProcess: Output from 1Password CLI
@@ -2658,14 +2712,14 @@ class Op:
         """
 
         if action == 'create':
-            if not self.item_exists(title):
-                cmd = [self.bin, 'item', action, f'--category={self.config["category"]}',
-                                                 f'--title={title}',
+            if not self.item_exists(item_title):
+                cmd = [self.bin, 'item', action, f'--category={category}',
+                                                 f'--title={item_title}',
                                                  f'--vault={self.vault}']
             else:
-                error(f'Item {title} already exists. Aborting', 1)
+                error(f'Item {item_title} already exists. Aborting', 1)
         elif action == 'edit':
-            cmd = [self.bin, 'item', action, f'{title}', f'--vault={self.vault}']
+            cmd = [self.bin, 'item', action, f'{item_title}', f'--vault={self.vault}']
         else:
             error(f'Unknown storage command {action}', 1)
 
