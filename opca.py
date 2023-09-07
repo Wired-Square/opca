@@ -23,6 +23,8 @@ other features that need to be implemented to be properly useful
 - CA certificate and key renewal
 - Regular certificate and key renewal
 - Implement private key passphrases
+- Implement a seperate CA Database class
+- Increment the CRL serial number on generation
 """
 
 import argparse
@@ -91,7 +93,7 @@ BG_COLOUR = {
 }
 
 # Constants
-OPCA_VERSION        = "0.11"
+OPCA_VERSION        = "0.12"
 OPCA_TITLE          = "1Password Certificate Authority"
 OPCA_SHORT_TITLE    = "OPCA"
 OPCA_AUTHOR         = "Alex Ferrara <alex@wiredsquare.com>"
@@ -121,6 +123,7 @@ DEFAULT_OP_CONF = {
     'csr_item': 'certificate_signing_request',
     'start_date_item': 'not_before[text]',
     'expiry_date_item': 'not_after[text]',
+    'revocation_date_item': 'revocation_date[text]',
     'serial_item': 'serial[text]',
     'openvpn_title': 'OpenVPN',
     'dh_item': 'diffie-hellman.dh_parameters',
@@ -429,6 +432,22 @@ def handle_ca_action(action, args):
             f'{OPCA_COLOUR_BRIGHT}{item_title}{COLOUR["reset"]} in 1Password', 9)
         result = ca.store_certbundle(cert_bundle)
         print_cmd_result(result.returncode)
+
+    elif action == 'revoke-cert':
+        ca = prepare_certificate_authority(one_password)
+        cert_info = {}
+
+        if args.serial:
+            cert_info['serial'] = args.serial
+            desc = f'Serial: {args.serial}'
+        else:
+            cert_info['cn'] = args.cn
+            desc = args.cn
+
+        title(f'Revoking the certificate [ { OPCA_COLOUR_BRIGHT }{ desc }{ COLOUR["reset"] } ]', 8)
+
+        if ca.revoke_certificate(cert_info=cert_info):
+            print(ca.generate_crl())
 
     else:
         error('This feature is not yet written', 99)
@@ -849,6 +868,17 @@ def parse_arguments(description):
             help='x509 CN attribute for the 1Password Certificate Authority')
     subparser_action_import_cert.add_argument('-v', '--vault', required=True, help='CA Vault')
 
+    subparser_action_revoke_cert = parser_ca_actions.add_parser('revoke-cert',
+            help='Create a new x509 CertificateBundle object')
+    subparser_action_revoke_cert.add_argument('-a', '--account', required=False,
+            help='1Password Account. Example: company.1password.com')
+    subparser_action_revoke_cert.add_argument('-v', '--vault', required=True, help='CA Vault')
+    subparser_group_revoke_cert = subparser_action_revoke_cert.add_mutually_exclusive_group(required=True)
+    subparser_group_revoke_cert.add_argument('-n', '--cn',
+            help='x509 CN of the certificate to revoke')
+    subparser_group_revoke_cert.add_argument('-s', '--serial',
+            help='Serial number of the certificate to revoke')
+
     """
     action_import_ca = parser_ca_actions.add_parser('renew-cert',
             help='Renew a x509 certificate')
@@ -1168,6 +1198,7 @@ class CertificateBundle:
         self.private_key = None
         self.private_key_passphrase = None # TODO: Implement private key passphrase
         self.certificate = None
+        self.revocation_date = ''
         self.config_attrs = (
             'org',
             'city',
@@ -1180,7 +1211,14 @@ class CertificateBundle:
             # Import
             if 'private_key' in self.config:
                 self.import_private_key(self.config['private_key'], self.private_key_passphrase)
+
             self.import_certificate(self.config['certificate'])
+
+            if 'csr' in self.config:
+                self.csr = x509.load_pem_x509_csr(self.config['csr'], default_backend())
+
+            if 'revocation_date' in self.config:
+                self.revocation_date = self.config['revocation_date']
 
             if not self.title:
                 self.title = self.get_certificate_attrib('cn')
@@ -1715,8 +1753,9 @@ class CertificateAuthority:
         """
         self.ca_certbundle = None
         self.ca_config = None
-        self.ca_database = None      # The equivalent of index.txt. Dict keyed by serial
-        self.ca_database_cn = None   # Dict keyed by cn. Essentially an index to ca_database
+        self.ca_database = None          # The equivalent of index.txt. Dict keyed by serial
+        self.ca_database_cn = None       # CA Database index - Dict keyed by cn with value of serial
+        self.ca_database_serial = None   # CA Database index - Dict keyed by serial with value of cn
         self.certs_revoked = None
         self.certs_expires_soon = None
         self.certs_valid = None
@@ -1738,6 +1777,7 @@ class CertificateAuthority:
         if config['command'] == 'init':
             self.ca_database = []
             self.ca_database_cn = {}
+            self.ca_database_serial = {}
             self.ca_config = config
             self.next_serial = int(self.ca_config['next_serial'])
 
@@ -1758,6 +1798,7 @@ class CertificateAuthority:
         elif config['command'] == 'import':
             self.ca_database = []
             self.ca_database_cn = {}
+            self.ca_database_serial = {}
             self.ca_config = config
             self.next_serial = int(self.ca_config['next_serial'])
 
@@ -1787,6 +1828,7 @@ class CertificateAuthority:
         elif config['command'] == 'rebuild-ca-database':
             self.ca_database = []
             self.ca_database_cn = {}
+            self.ca_database_serial = {}
             self.ca_config = config
             self.next_serial = self.ca_config.get('next_serial')
 
@@ -1835,6 +1877,7 @@ class CertificateAuthority:
         self.store_ca_database()
 
         self.ca_database_cn[certificate_cn] = certificate_serial
+        self.ca_database_serial[certificate_serial] = certificate_cn
 
         return True
 
@@ -2018,7 +2061,7 @@ class CertificateAuthority:
 
         return self.ca_certbundle.is_valid()
 
-    def process_ca_database(self):
+    def process_ca_database(self, revoke_serial=None):
         """
         Process the CA database.
          - The status of certifiates might change due to time
@@ -2031,7 +2074,7 @@ class CertificateAuthority:
             None
 
         Returns:
-            bool: Did the database chnage post-processing
+            bool: Did the database change post-processing
 
         Raises:
             None
@@ -2059,6 +2102,11 @@ class CertificateAuthority:
                     expires_soon = datetime.utcnow() + timedelta(30) > expiry_date
                     revoked = bool(cert['revocation_date']) or (cert['status'] == 'Revoked')
 
+                    if revoke_serial is not None:
+                        if not expired and not revoked and int(revoke_serial) == cert['serial']:
+                            revoked = True
+                            cert['revocation_date'] = self.format_datetime(datetime.utcnow())
+
                 except KeyError:
                     warning(f"'expiry_date' key not found for certificate { cert['serial'] }.")
                     skip = True
@@ -2069,7 +2117,6 @@ class CertificateAuthority:
                     db_error = True
 
 
-
                 if not skip:
                     if expired:
                         if cert['status'] != 'Expired':
@@ -2077,8 +2124,8 @@ class CertificateAuthority:
                             cert['status'] = 'Expired'
                     elif revoked:
                         if cert['status'] != 'Revoked':
-                            cert['status'] = 'Revoked'
                             changed = True
+                            cert['status'] = 'Revoked'
 
                         self.certs_revoked.append(cert)
 
@@ -2162,6 +2209,7 @@ class CertificateAuthority:
         """
         self.ca_config = {}
         self.ca_database_cn = {}
+        self.ca_database_serial = {}
         result_dict = {}
         result = self.one_password.get_item(self.op_config['ca_database_title'])
 
@@ -2187,8 +2235,11 @@ class CertificateAuthority:
                             result_dict[section_label][field_label] = field_value
 
                     # Build the index
-                    if field_label == 'cn' and field_value not in self.ca_database_cn:
-                        self.ca_database_cn[field_value] = section_label
+                    if field_label == 'cn':
+                        if field_value not in self.ca_database_cn:
+                            self.ca_database_cn[field_value] = section_label
+                        if section_label not in self.ca_database_serial:
+                            self.ca_database_serial[section_label] = field_value
 
             self.ca_database = list(result_dict.values())
 
@@ -2221,11 +2272,15 @@ class CertificateAuthority:
         for field in loaded_object['fields']:
             if field['label'] == 'certificate':
                 cert_config['certificate'] = field['value'].encode('utf-8')
-            elif field['label'] == 'private_key':
+            elif field['label'] == 'private_key' and 'value' in field:
                 cert_config['private_key'] = field['value'].encode('utf-8')
+            elif field['label'] == 'certificate_signing_request' and 'value' in field:
+                cert_config['csr'] = field['value'].encode('utf-8')
             elif field['label'] == 'type':
                 cert_config['cert_type'] = field['value']
                 cert_type = field['value']
+            elif field['label'] == 'revocation_date' and 'value' in field:
+                cert_config['revocation_date'] = field['value']
 
         if 'certificate' not in cert_config:
             return None
@@ -2233,6 +2288,62 @@ class CertificateAuthority:
         return self.import_certificate_bundle(cert_type=cert_type,
                                               item_title=item_title,
                                               config=cert_config)
+
+    def revoke_certificate(self, cert_info):
+        """
+        Revokes a previously signed certificate
+
+        Args:
+            cert_info (dict): key - The certificate attribute (cn or serial)
+                            value - The attribute data
+
+        Returns:
+            bool
+
+        Raises:
+            None
+        """
+
+        if 'serial' in cert_info:
+            item_serial = cert_info['serial']
+
+            if item_serial in self.ca_database_serial:
+                item_title = self.ca_database_serial[item_serial]
+            else:
+                error(f'Certificate with serial number { item_serial } not found. Aborting', 1)
+
+        
+        elif 'cn' in cert_info:
+            item_title = cert_info['cn']
+
+            if item_title in self.ca_database_cn:
+                item_serial = self.ca_database_cn[item_title]
+            else:
+                error(f'Certificate with CN { item_title } not found. Aborting', 1)
+
+        else:
+            error(f'Unknown certificate attribute', 1)
+
+        print(f'Found {item_title} in CA database with serial {item_serial}')
+
+        cert_bundle = self.retrieve_certbundle(item_title=item_title)
+
+        if self.process_ca_database(revoke_serial=item_serial):
+            print(f'Certificate serial number { item_serial } revoked in the database.')
+            cert_bundle.title = f'revoked_{ item_title }'
+            cert_bundle.revocation_date = self.format_datetime(datetime.utcnow())
+
+            result = self.store_certbundle(cert_bundle)
+
+            if result.returncode == 0:
+                self.one_password.delete_item(item_title)
+                pass
+            else:
+                error('Unable to store the certificate bundle', 1)
+
+            return True
+        
+        return False
 
     def sign_certificate(self, csr, target=None):
         """
@@ -2397,9 +2508,12 @@ class CertificateAuthority:
         """
 
         item_title = certbundle.get_title()
+        item_serial = certbundle.certificate.serial_number
 
         if certbundle.is_valid() and item_title not in self.ca_database_cn:
-            self.add_ca_database_item(certbundle.certificate)
+
+            if str(item_serial) not in self.ca_database_serial:
+                self.add_ca_database_item(certbundle.certificate)
 
             attributes = [f'{self.op_config["cert_type_item"]}=' + \
                                 f'{certbundle.get_type()}',
@@ -2415,8 +2529,10 @@ class CertificateAuthority:
                                 f'{certbundle.get_certificate_attrib("not_before")}',
                           f'{self.op_config["expiry_date_item"]}=' + \
                                 f'{certbundle.get_certificate_attrib("not_after")}',
+                          f'{self.op_config["revocation_date_item"]}=' + \
+                                f'{certbundle.revocation_date}',
                           f'{self.op_config["serial_item"]}=' + \
-                                f'{certbundle.get_certificate_attrib("serial")}',
+                                f'{ item_serial }',
                           f'{self.op_config["csr_item"]}=' + \
                                 f'{certbundle.get_csr() or ""}'
             ]
@@ -2489,6 +2605,29 @@ class Op:
         if result.returncode != 0:
             error(result.stderr, result.returncode)
             sys.exit(result.returncode)
+
+    def delete_item(self, item_title, archive=True):
+        """
+        Deletes an item from 1Password
+
+        Args:
+            item_title (str): The item to delete
+
+        Returns:
+            subprocess.CompletedProcess: Output from 1Password CLI > op vault get [ vault ]
+
+        Raises:
+            None
+        """
+
+        cmd = [self.bin, 'item', 'delete', item_title]
+
+        if archive:
+            cmd.append('--archive')
+
+        result = run_command(cmd)
+
+        return result
 
     def edit_or_create(self, item_title, attributes):
         """
@@ -2590,12 +2729,12 @@ class Op:
 
         return result
 
-    def item_exists(self, item):
+    def item_exists(self, item_title):
         """
         Checks to see if an item exists in 1Password
 
         Args:
-            item (str): The item to check for
+            item_title (str): The item to check for
 
         Returns:
             bool: Existence of the item in 1Password
@@ -2603,7 +2742,7 @@ class Op:
         Raises:
             None
         """
-        result = self.read_item(self.mk_url(item_title=item, value_key='Title'))
+        result = self.read_item(self.mk_url(item_title=item_title, value_key='Title'))
 
         return bool(result.returncode == 0)
 
