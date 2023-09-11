@@ -13,11 +13,12 @@ import argparse
 from opca_lib.alerts import title
 from opca_lib.command_openvpn import handle_openvpn_action
 from opca_lib.command_ca import handle_ca_action
+from opca_lib.command_crl import handle_crl_action
 from opca_lib.command_database import handle_database_action
 from opca_lib.command_manage import handle_manage_action
 
 # Constants
-OPCA_VERSION        = "0.13.0"
+OPCA_VERSION        = "0.13.1"
 OPCA_TITLE          = "1Password Certificate Authority"
 OPCA_SHORT_TITLE    = "OPCA"
 OPCA_AUTHOR         = "Alex Ferrara <alex@wiredsquare.com>"
@@ -42,8 +43,28 @@ def parse_arguments(prog_desc):
     subparsers = parser.add_subparsers(title='Commands', dest='selection',
                                                         required=True)
 
-    #
-    # CA
+    setup_ca_subparser(subparsers)
+    setup_crl_subparser(subparsers)
+    setup_database_subparser(subparsers)
+    setup_openvpn_subparser(subparsers)
+    setup_manage_subparser(subparsers)
+
+    return parser.parse_args()
+
+def setup_ca_subparser(subparsers):
+    """
+    Set up the subparser for Certificate Authority (CA) related commands.
+
+    Args:
+        subparsers (argparse._SubParsersAction): The subparsers object from the main parser.
+
+    Returns:
+        None
+
+    Raises:
+        None
+    """
+
     parser_ca = subparsers.add_parser('ca', help='Perform Certificate Authority actions')
     parser_ca_actions = parser_ca.add_subparsers(title='Actions', dest='action',
                                                         required=True)
@@ -116,13 +137,6 @@ def parse_arguments(prog_desc):
     subparser_action_get_csr.add_argument('-v', '--vault', required=True,
         help='CA Vault')
 
-    subparser_action_get_crl = parser_ca_actions.add_parser('get-crl',
-        help='Get the Certificate Revocation List from 1Password')
-    subparser_action_get_crl.add_argument('-a', '--account', required=False,
-        help='1Password Account. Example: company.1password.com')
-    subparser_action_get_crl.add_argument('-v', '--vault', required=True,
-        help='CA Vault')
-
     subparser_action_create_cert = parser_ca_actions.add_parser('create-cert',
         help='Create a new x509 CertificateBundle object')
     subparser_action_create_cert.add_argument('-a', '--account', required=False,
@@ -136,12 +150,6 @@ def parse_arguments(prog_desc):
     subparser_action_create_cert.add_argument('-v', '--vault', required=True, help='CA Vault')
     subparser_action_create_cert.add_argument('--alt', action='append', required=False,
         help='Alternate CN.')
-
-    subparser_action_gen_crl = parser_ca_actions.add_parser('create-crl',
-        help='Generate a Certificate Revokation List for the 1Password CA')
-    subparser_action_gen_crl.add_argument('-a', '--account', required=False,
-        help='1Password Account. Example: company.1password.com')
-    subparser_action_gen_crl.add_argument('-v', '--vault', required=True, help='CA Vault')
 
     subparser_action_import_cert = parser_ca_actions.add_parser('import-cert',
         help='Create a new x509 CertificateBundle object')
@@ -179,8 +187,44 @@ def parse_arguments(prog_desc):
     subparser_group_revoke_cert.add_argument('-s', '--serial', type=int,
         help='Serial number of the certificate to revoke')
 
-    #
-    # Database
+def setup_crl_subparser(subparsers):
+    """
+    Configure the CRL-related subparser.
+
+    Args:
+        subparsers (argparse._SubParsersAction): The subparsers object from the main parser.
+
+    Returns:
+        None
+    """
+    parser_crl = subparsers.add_parser('crl', help='Perform CRL actions')
+    parser_crl_actions = parser_crl.add_subparsers(title='Actions', dest='action',
+                                                        required=True)
+
+    subparser_action_get_crl = parser_crl_actions.add_parser('get',
+        help='Get the Certificate Revocation List from 1Password')
+    subparser_action_get_crl.add_argument('-a', '--account', required=False,
+        help='1Password Account. Example: company.1password.com')
+    subparser_action_get_crl.add_argument('-v', '--vault', required=True,
+        help='CA Vault')
+
+    subparser_action_gen_crl = parser_crl_actions.add_parser('create',
+        help='Generate a Certificate Revokation List for the 1Password CA')
+    subparser_action_gen_crl.add_argument('-a', '--account', required=False,
+        help='1Password Account. Example: company.1password.com')
+    subparser_action_gen_crl.add_argument('-v', '--vault', required=True, help='CA Vault')
+
+def setup_database_subparser(subparsers):
+    """
+    Set up the subparser for database related commands.
+
+    Args:
+        subparsers (argparse._SubParsersAction): The subparsers object from the main parser.
+
+    Returns:
+        None
+    """
+
     parser_db = subparsers.add_parser('database',
         help='Perform Certificate Authority Database actions')
     parser_db_actions = parser_db.add_subparsers(title='Actions', dest='action',
@@ -224,8 +268,17 @@ def parse_arguments(prog_desc):
     subparser_action_set_config.add_argument('--conf', action='append', required=True,
         help='Configuration attributes to modify. Example: --conf city=Canberra --conf days=30')
 
-    #
-    # OpenVPN
+def setup_openvpn_subparser(subparsers):
+    """
+    Set up the subparser for OpenVPN related commands.
+
+    Args:
+        subparsers (argparse._SubParsersAction): The subparsers object from the main parser.
+
+    Returns:
+        None
+    """
+
     parser_openvpn = subparsers.add_parser('openvpn', help='Perform OpenVPN actions')
     parser_openvpn_actions = parser_openvpn.add_subparsers(title='Actions', dest='action',
                                                                   required=True)
@@ -296,8 +349,17 @@ def parse_arguments(prog_desc):
     subparser_action_gen_sample_vpn_server.add_argument('-v', '--vault', required=True,
         help='CA Vault')
 
-    #
-    # Manage
+def setup_manage_subparser(subparsers):
+    """
+    Set up the subparser for management related commands.
+
+    Args:
+        subparsers (argparse._SubParsersAction): The subparsers object from the main parser.
+
+    Returns:
+        None
+    """
+
     parser_manage = subparsers.add_parser('manage', help='Perform management actions')
     parser_manage_actions = parser_manage.add_subparsers(title='Actions', dest='action',
                                                                 required=True)
@@ -309,9 +371,6 @@ def parse_arguments(prog_desc):
         help='Find out about the current 1Password user')
     subparser_action_whoami.add_argument('-a', '--account', required=False,
         help='1Password Account. Example: company.1password.com')
-
-    return parser.parse_args()
-
 
 if __name__ == "__main__":
 
@@ -326,6 +385,9 @@ if __name__ == "__main__":
 
     if selection == 'ca':
         handle_ca_action(action, args)
+
+    if selection == 'crl':
+        handle_crl_action(action, args)
 
     elif selection == 'database':
         handle_database_action(action, args)

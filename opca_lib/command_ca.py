@@ -146,16 +146,6 @@ def handle_ca_action(ca_action, cli_args):
 
         print(cert_authority.get_certificate())
 
-    elif ca_action == 'get-crl':
-        cert_authority = prepare_cert_authority(one_password)
-
-        crl = cert_authority.get_crl()
-
-        title(f'Checking retrieved [ { COLOUR_BRIGHT }CRL Validity{ COLOUR_RESET } ]', 9)
-        print_result(cert_authority.is_crl_valid(crl.encode('utf-8')))
-
-        print(crl)
-
     elif ca_action == 'get-csr':
         url = one_password.mk_url(cli_args.cn, DEFAULT_OP_CONF['csr_item'])
 
@@ -187,16 +177,6 @@ def handle_ca_action(ca_action, cli_args):
             config=cert_config)
 
         print_result(new_certificate_bundle.is_valid())
-
-    elif ca_action == 'create-crl':
-        cert_authority = prepare_cert_authority(one_password)
-
-        crl = cert_authority.generate_crl()
-
-        title(f'Checking generated [ { COLOUR_BRIGHT }CRL Validity{ COLOUR_RESET } ]', 9)
-        print_result(cert_authority.is_crl_valid(crl.encode('utf-8')))
-
-        print(crl)
 
     elif ca_action == 'import-cert':
         cert_authority = prepare_cert_authority(one_password)
