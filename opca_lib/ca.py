@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 #
 # opca_lib/ca.py
@@ -18,10 +17,41 @@ from cryptography.x509.oid import ExtensionOID
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives import serialization
-from opca_lib.alerts import error, print_result, title, warning
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.exceptions import InvalidSignature
+from opca_lib.alerts import error, title, print_result, warning
 from opca_lib.certificate_bundle import CertificateBundle
 from opca_lib.colour import COLOUR_BRIGHT, COLOUR_RESET
+from opca_lib.crypto import DEFAULT_KEY_SIZE
+from opca_lib.database import CertificateAuthorityDB
+from opca_lib.date import format_datetime
 from opca_lib.op import DEFAULT_OP_CONF
+
+
+def prepare_cert_authority(one_password):
+    """
+    Prepares the certificate authority object for later consumption
+
+    Args:
+        command (str): The way we will construct the certificate authority
+        config (dict): CA Configuration
+
+    Returns:
+        CertificateAuthority
+
+    Raises:
+        None
+    """
+
+    ca_config = {
+        'command': 'retrieve'
+    }
+
+    cert_authority = CertificateAuthority(one_password=one_password,
+                            config=ca_config,
+                            op_config=DEFAULT_OP_CONF)
+
+    return cert_authority
 
 
 class CertificateAuthority:
@@ -36,66 +66,35 @@ class CertificateAuthority:
             config (dict): Configuration items
         """
         self.ca_certbundle = None
-        self.ca_config = None
-        self.ca_database = None          # The equivalent of index.txt. Dict keyed by serial
-        self.ca_database_cn = None       # CA Database index - Dict keyed by cn with value of serial
-        self.ca_database_serial = None   # CA Database index - Dict keyed by serial with value of cn
-        self.certs_revoked = None
-        self.certs_expires_soon = None
-        self.certs_valid = None
-        self.next_serial = None
         self.one_password = one_password
         self.op_config = op_config
-        self.config_attrs = (
-            'org',
-            'email',
-            'city',
-            'state',
-            'country',
-            'ca_url',
-            'crl_url',
-            'days',
-            'crl_days'
-        )
+        self.crl = None
 
         if config['command'] == 'init':
-            self.ca_database = []
-            self.ca_database_cn = {}
-            self.ca_database_serial = {}
-            self.ca_config = config
-            self.next_serial = int(self.ca_config['next_serial'])
-
             if one_password.item_exists(self.op_config['ca_title']):
                 error('Certificate Authority already exists. Aborting.', 0)
+
+            self.ca_database = CertificateAuthorityDB(config)
 
             self.ca_certbundle = CertificateBundle(cert_type='ca',
                                       item_title=self.op_config['ca_title'],
                                       import_certbundle=False,
-                                      config=self.ca_config)
+                                      config=config)
 
-            self.next_serial += 1
-
-            self.ca_database.append(self.format_db_item(self.ca_certbundle.certificate))
+            self.ca_database.increment_serial('cert')
 
             self.store_certbundle(self.ca_certbundle)
 
         elif config['command'] == 'import':
-            self.ca_database = []
-            self.ca_database_cn = {}
-            self.ca_database_serial = {}
-            self.ca_config = config
-            self.next_serial = int(self.ca_config['next_serial'])
-
             if one_password.item_exists(self.op_config['ca_title']):
                 error('Certificate Authority already exists. Aborting.', 0)
 
+            self.ca_database = CertificateAuthorityDB(config)
 
             self.ca_certbundle = CertificateBundle(cert_type='ca',
                                       item_title=self.op_config['ca_title'],
                                       import_certbundle=True,
-                                      config=self.ca_config)
-
-            self.ca_database.append(self.format_db_item(self.ca_certbundle.certificate))
+                                      config=config)
 
             self.store_certbundle(self.ca_certbundle)
 
@@ -103,91 +102,40 @@ class CertificateAuthority:
             if not one_password.item_exists(self.op_config['ca_title']):
                 error('Certificate Authority does not exist. Aborting.', 0)
 
-            self.ca_certbundle = self.retrieve_certbundle(item_title=self.op_config['ca_title'])
+            result = self.one_password.get_document(self.op_config['ca_database_title'])
 
-            self.retrieve_ca_database()
-            if self.process_ca_database():
-                self.store_ca_database()
+            if result.returncode == 0:
+                ca_database_sql = result.stdout
+
+            self.ca_database = CertificateAuthorityDB(data=ca_database_sql)
+
+            self.ca_certbundle = self.retrieve_certbundle(item_title=self.op_config['ca_title'])
 
         elif config['command'] == 'rebuild-ca-database':
-            self.ca_database = []
-            self.ca_database_cn = {}
-            self.ca_database_serial = {}
-            self.ca_config = config
-            self.next_serial = self.ca_config.get('next_serial')
-
-            # If present, it needs to be cast to an int
-            if self.next_serial is not None:
-                self.next_serial = int(self.next_serial)
-
             if not one_password.item_exists(self.op_config['ca_title']):
-                error('Certificate Authority does not exist. Aborting.', 0)
+                error('Certificate Authority does not exist. Aborting.', 1)
+
+            if self.one_password.item_exists(self.op_config['ca_database_title']):
+                error('CA database exists. Aborting', 1)
+
+            self.ca_database = CertificateAuthorityDB(config)
 
             self.ca_certbundle = self.retrieve_certbundle(item_title=self.op_config['ca_title'])
 
-            if self.one_password.item_exists(self.op_config['ca_database_title']):
-                error('CA database exists. Aborting', 0)
-
-            self.ca_database.append(self.format_db_item(self.ca_certbundle.certificate))
+            self.ca_database.update_config(self.ca_certbundle.get_config())
 
             self.rebuild_ca_database()
 
         else:
             error('Unknown CA command', 0)
 
-    def add_ca_database_item(self, certificate):
-        """
-        Add an item to the CA database, process and store.
-
-        Args:
-            certificate (Certfqwfwe): The certificate to add to the database
-        
-        Returns:
-            Bool
-
-        Raises:
-            None
-        """
-
-        certificate_cn = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
-        certificate_serial = certificate.serial_number
-
-        if certificate_serial in self.ca_database:
-            return False
-
-        self.process_ca_database()
-
-        self.ca_database.append(self.format_db_item(certificate))
-        self.store_ca_database()
-
-        self.ca_database_cn[certificate_cn] = certificate_serial
-        self.ca_database_serial[certificate_serial] = certificate_cn
-
-        return True
-
-    def format_datetime(self, date):
-        """
-        Format a datetime to match OpenSSL text
-
-        Args:
-            date (datetime): The datetime object we are working with
-        
-        Returns:
-            str
-
-        Raises:
-            None
-        """
-        format_string = '%Y%m%d%H%M%SZ'
-
-        return date.strftime(format_string)
-
-    def format_db_item(self, certificate):
+    def format_db_item(self, certificate, item_title=None):
         """
         Format a certificate db item from a certificate
 
         Args:
             certificate: cryptography.hazmat.bindings._rust.x509.Certificate
+            item_title (str): The storage title of the certificate bundle
 
         Returns:
             list
@@ -206,9 +154,9 @@ class CertificateAuthority:
         cert_db_item = {
             'serial': certificate.serial_number,
             'cn': certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value,
+            'title': item_title,
             'status': status,
-            'expiry_date': self.format_datetime(certificate.not_valid_after),
-            'revocation_date': '',
+            'expiry_date': format_datetime(certificate.not_valid_after),
             'subject': certificate.subject.rfc4514_string()
         }
 
@@ -216,7 +164,7 @@ class CertificateAuthority:
 
     def get_certificate(self):
         """
-        Returns the CA certificate in various formats
+        Returns the CA certificate in PEM format
 
         Args:
             None
@@ -228,6 +176,28 @@ class CertificateAuthority:
             None
         """
         return self.ca_certbundle.get_certificate()
+
+    def get_crl(self):
+        """
+        Returns the Certificate Signing Request stored in 1Password in PEM format
+
+        Args:
+            None
+        
+        Returns:
+            str
+
+        Raises:
+            None
+        """
+
+        if self.crl is None:
+            result = self.one_password.get_document(self.op_config['crl_title'])
+
+            if result.returncode == 0:
+                self.crl = result.stdout
+
+        return self.crl
 
     def generate_crl(self):
         """
@@ -243,16 +213,24 @@ class CertificateAuthority:
             None
         """
 
+        self.ca_database.process_ca_database()
+
+        crl_days = self.ca_database.get_config_attributes()['crl_days']
+
         builder = x509.CertificateRevocationListBuilder()
 
         builder = builder.issuer_name(x509.Name([
-            x509.NameAttribute(x509.NameOID.COMMON_NAME, self.ca_certbundle.get_certificate_attrib('cn')),
+            x509.NameAttribute(x509.NameOID.COMMON_NAME,
+                                self.ca_certbundle.get_certificate_attrib('cn')),
         ]))
 
-        builder = builder.last_update(datetime.today())
-        builder = builder.next_update(datetime.today() + timedelta(int(self.ca_config["crl_days"])))
+        builder = builder.last_update(datetime.utcnow())
+        builder = builder.next_update(datetime.utcnow() + timedelta(crl_days))
 
-        for cert in self.certs_revoked:
+        crl_serial = self.ca_database.increment_serial('crl')
+        builder = builder.add_extension(x509.CRLNumber(crl_serial), critical=False)
+
+        for cert in self.ca_database.certs_revoked:
             serial_number = cert['serial']
             revocation_date = datetime.strptime(cert['revocation_date'], '%Y%m%d%H%M%SZ')
 
@@ -262,7 +240,22 @@ class CertificateAuthority:
 
         crl = builder.sign(self.ca_certbundle.private_key, hashes.SHA256(), default_backend())
 
-        return crl.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+        self.crl = crl.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+
+        result = self.one_password.store_document(action='auto',
+                        item_title=self.op_config['crl_title'],
+                        filename=self.op_config['crl_filename'],
+                        str_in=self.crl)
+
+        if result.returncode != 0:
+            error(result.stderr, 1)
+
+        result = self.store_ca_database()
+
+        if result.returncode != 0:
+            error(result.stderr, 1)
+
+        return self.crl
 
     def generate_certificate_bundle(self, cert_type, item_title, config):
         """
@@ -291,8 +284,7 @@ class CertificateAuthority:
 
         cert_bundle.update_certificate(signed_certificate)
 
-        if cert_bundle.is_valid():
-            self.store_certbundle(cert_bundle)
+        self.store_certbundle(cert_bundle)
 
         return cert_bundle
 
@@ -325,8 +317,10 @@ class CertificateAuthority:
         cert_valid = obj.is_valid()
 
         if obj.private_key:
-            #TODO: check is certificate is expiring soon
             print_result(cert_valid)
+
+            if obj.get_certificate_attrib('serial') in self.ca_database.certs_expires_soon:
+                warning(f'Certificate { item_title } is expiring soon')
         else:
             print_result(False, failed_msg='NOPRIV')
 
@@ -334,6 +328,67 @@ class CertificateAuthority:
             error('CA Certificate is not valid. This is quite serious.', 1)
 
         return obj
+
+    def is_cert_valid(self, certificate):
+        """
+        Check if a certificate is valid and was signed by the CA certificate.
+
+        Args:
+            certificate (x509.Certificate): The certificate to check.
+
+        Returns:
+            bool: True if the certificate is valid and was signed by the CA, False otherwise.
+        """
+        ca_cert = self.ca_certbundle.certificate
+
+        # 1. Signature Verification
+        try:
+            ca_cert.public_key().verify(
+                certificate.signature,
+                certificate.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                certificate.signature_hash_algorithm
+            )
+        except InvalidSignature:
+            return False
+
+        # 2. Date Validity
+        current_date = datetime.utcnow()
+        if certificate.not_valid_before <= current_date <= certificate.not_valid_after:
+            return True
+
+        return False
+
+    def is_crl_valid(self, crl_pem):
+        """
+        Check if a CRL is valid.
+
+        Args:
+            crl_pem (bytes): The PEM encoded CRL.
+
+        Returns:
+            bool: True if the CRL is valid, False otherwise.
+        """
+        crl = x509.load_pem_x509_crl(crl_pem, default_backend())
+        ca_cert = self.ca_certbundle.certificate
+
+        # 1. Signature Verification
+        try:
+            ca_cert.public_key().verify(
+                crl.signature,
+                crl.tbs_certlist_bytes,
+                padding.PKCS1v15(),
+                crl.signature_hash_algorithm
+            )
+        except InvalidSignature:
+            return False
+
+        # 2. Date Validity
+        current_date = datetime.utcnow()
+        if crl.last_update <= current_date <= crl.next_update:
+            return True
+
+        return False
 
     def is_valid(self):
         """
@@ -350,88 +405,6 @@ class CertificateAuthority:
         """
 
         return self.ca_certbundle.is_valid()
-
-    def process_ca_database(self, revoke_serial=None):
-        """
-        Process the CA database.
-         - The status of certifiates might change due to time
-         - Gather a list of
-           - Certificates revoked
-           - Certificates expiring soon
-           - Certificates valid
-
-        Args:
-            None
-
-        Returns:
-            bool: Did the database change post-processing
-
-        Raises:
-            None
-        """
-        changed = False
-        db_error = False
-        tmp_ca_db = []
-        self.certs_revoked = []
-        self.certs_expires_soon = []
-        self.certs_valid = []
-
-        if self.ca_database is None:
-            db_error = True
-
-        else:
-
-            for cert in self.ca_database:
-                skip = False
-
-                try:
-                    expiry_date = datetime.strptime(cert['expiry_date'], '%Y%m%d%H%M%SZ')
-
-                    expired = datetime.utcnow() > expiry_date
-
-                    expires_soon = datetime.utcnow() + timedelta(29) > expiry_date
-                    revoked = bool(cert['revocation_date']) or (cert['status'] == 'Revoked')
-
-                    if revoke_serial is not None:
-                        if not expired and not revoked and int(revoke_serial) == cert['serial']:
-                            revoked = True
-                            cert['revocation_date'] = self.format_datetime(datetime.utcnow())
-
-                except KeyError:
-                    warning(f"'expiry_date' key not found for certificate { cert['serial'] }.")
-                    skip = True
-                    db_error = True
-                except ValueError:
-                    warning(f"Unable to parse 'expiry_date' for certificate { cert['serial'] }.")
-                    skip = True
-                    db_error = True
-
-
-                if not skip:
-                    if expired:
-                        if cert['status'] != 'Expired':
-                            changed = True
-                            cert['status'] = 'Expired'
-                    elif revoked:
-                        if cert['status'] != 'Revoked':
-                            changed = True
-                            cert['status'] = 'Revoked'
-
-                        self.certs_revoked.append(cert)
-
-                    elif expires_soon:
-                        self.certs_expires_soon.append(cert)
-
-                    else:
-                        self.certs_valid.append(cert)
-
-                    tmp_ca_db.append(cert)
-
-        if changed and not db_error:
-            self.ca_database = tmp_ca_db
-            self.store_ca_database()
-
-        return changed
 
     def rebuild_ca_database(self):
         """
@@ -466,74 +439,74 @@ class CertificateAuthority:
             else:
                 # Actual certificate
                 cert_serial = cert_bundle.get_certificate_attrib('serial')
-                result_dict[cert_serial] = cert_bundle.certificate
 
-        for serial, certificate in sorted(result_dict.items()):
-            self.add_ca_database_item(certificate=certificate)
+                if cert_serial in result_dict:
+                    warning(f'Duplicate serial number [ '
+                            f'{ COLOUR_BRIGHT }{ cert_serial }{ COLOUR_RESET } ] in CA Database')
+
+                result_dict[cert_serial] = {'cert': cert_bundle.certificate,
+                                            'title': item_title}
+
+        for serial, attrs in sorted(result_dict.items()):
+            self.ca_database.add_cert(self.format_db_item(certificate=attrs['cert'],
+                                                          item_title=attrs['title']))
 
             if serial > max_serial:
                 max_serial = serial + 0
 
-        if self.next_serial:
-            if max_serial >= self.next_serial:
-                warning(f'The next serial is { self.next_serial } but the largest serial number seen is { max_serial }')
+        next_serial = self.ca_database.get_config_attributes()['next_serial']
+
+        if next_serial:
+            if max_serial >= next_serial:
+                warning(f'The next serial is { next_serial } '
+                        f'but the largest serial number seen is { max_serial }')
 
         else:
-            self.next_serial = max_serial + 0
+            next_serial = max_serial + 1
+            self.ca_database.update_config({'next_serial': next_serial})
 
-        title(f'Next serial is [ { COLOUR_BRIGHT }{ self.next_serial }{ COLOUR_RESET } ]', 7)
+        title(f'Next serial is [ { COLOUR_BRIGHT }{ next_serial }{ COLOUR_RESET } ]', 7)
+        title(f'Total certificates in database is [ '
+              f'{ COLOUR_BRIGHT }{ self.ca_database.count_certs() }{ COLOUR_RESET } ]', 7)
+
         self.store_ca_database()
 
-    def retrieve_ca_database(self):
+    def rename_certbundle(self, src_item_title, dst_item_title):
         """
-        Retrieve the CA certificate database from 1Password
+        Renames a certificate bundle in 1Password
 
         Args:
-            None
+            src_item_title (str): The 1Password object that contains a certificate bundle
+            dst_item_title (str): The new 1Password object that contains a certificate bundle
 
         Returns:
-            dict: The CA database as retrieved
+            bool: True if the update succeeded, False otherwise.
 
         Raises:
             None
         """
-        self.ca_config = {}
-        self.ca_database_cn = {}
-        self.ca_database_serial = {}
-        result_dict = {}
-        result = self.one_password.get_item(self.op_config['ca_database_title'])
+        db_item = self.ca_database.query_cert(cert_info={'title': src_item_title},
+                                              valid_only=False)
+        print(db_item)
 
-        if result.returncode == 0:
-            loaded_ca_db = json.loads(result.stdout)
+        get_result = self.one_password.get_item(src_item_title)
 
-            for field in loaded_ca_db['fields']:
-                if 'section' in field:
-                    section_label = field['section']['label']
-                    field_label = field['label']
-                    field_value = field.get('value', '')
+        if get_result.returncode != 0:
+            error(f'Unable to get the item { src_item_title }', 1)
 
-                    if section_label == 'config':
-                        if field_label == 'next_serial':
-                            self.next_serial = int(field_value)
-                        elif field_label in self.config_attrs:
-                            self.ca_config[field_label] = field_value
-                    elif section_label not in result_dict:
-                        result_dict[section_label] = {'serial': int(section_label)}
+        store_result = self.one_password.store_item(item_title=dst_item_title,
+                                                    category=None,
+                                                    str_in=get_result.stdout)
 
-                    if section_label != 'config':
-                        if field_label in ('status', 'cn', 'subject', 'expiry_date', 'revocation_date'):
-                            result_dict[section_label][field_label] = field_value
+        if store_result.returncode != 0:
+            error(f'Unable to store the item as { dst_item_title }', 1)
 
-                    # Build the index
-                    if field_label == 'cn':
-                        if field_value not in self.ca_database_cn:
-                            self.ca_database_cn[field_value] = section_label
-                        if section_label not in self.ca_database_serial:
-                            self.ca_database_serial[section_label] = field_value
+        db_item['title'] = dst_item_title
 
-            self.ca_database = list(result_dict.values())
+        if self.ca_database.update_cert(db_item) and self.store_ca_database().returncode == 0:
+            return self.one_password.delete_item(src_item_title)
 
-        return self.ca_database
+        return False
 
     def retrieve_certbundle(self, item_title):
         """
@@ -541,7 +514,6 @@ class CertificateAuthority:
 
         Args:
             item_title (str): The 1Password object that contains a certificate bundle
-            ca (bool): Is the certificate bundle our CA?
 
         Returns:
             CertificateBundle if the retrieved object is a certificate bundle, otherwise None
@@ -594,41 +566,27 @@ class CertificateAuthority:
             None
         """
 
-        if 'serial' in cert_info:
-            item_serial = cert_info['serial']
+        cert = self.ca_database.query_cert(cert_info=cert_info, valid_only=True)
 
-            if item_serial in self.ca_database_serial:
-                item_title = self.ca_database_serial[item_serial]
-            else:
-                error(f'Certificate with serial number { item_serial } not found. Aborting', 0)
+        if not cert:
+            error(f'Certificate with { cert_info } not found. Aborting', 0)
 
+        item_serial = cert['serial']
+        item_title = cert['title']
 
-        elif 'cn' in cert_info:
-            item_title = cert_info['cn']
+        if self.ca_database.process_ca_database(revoke_serial=item_serial):
 
-            if item_title in self.ca_database_cn:
-                item_serial = self.ca_database_cn[item_title]
-            else:
-                error(f'Certificate with CN { item_title } not found. Aborting', 0)
+            self.store_ca_database()
 
-        else:
-            error('Unknown certificate attribute', 0)
+            if item_title != str(item_serial):
+                rename_result = self.rename_certbundle(src_item_title=item_title,
+                                                    dst_item_title=item_serial)
 
-        print(f'Found {item_title} in CA database with serial {item_serial}')
+                if rename_result.returncode != 0:
+                    error(f'Unable to rename the certificate bundle { item_title } '
+                          f'[ { item_serial }]', 1)
 
-        cert_bundle = self.retrieve_certbundle(item_title=item_title)
-
-        if self.process_ca_database(revoke_serial=item_serial):
-            print(f'Certificate serial number { item_serial } revoked in the database.')
-            cert_bundle.title = f'revoked_{ item_title }'
-            cert_bundle.revocation_date = self.format_datetime(datetime.utcnow())
-
-            result = self.store_certbundle(cert_bundle)
-
-            if result.returncode == 0:
-                self.one_password.delete_item(item_title)
-            else:
-                error('Unable to store the certificate bundle', 0)
+                return rename_result == 0
 
             return True
 
@@ -649,8 +607,10 @@ class CertificateAuthority:
             None
         """
 
-        certificate_serial = self.next_serial
-        delta = timedelta(int(self.ca_config['days']))
+        ca_config = self.ca_database.get_config_attributes()
+        ca_public_key = self.ca_certbundle.private_key.public_key()
+        certificate_serial = self.ca_database.increment_serial('cert')
+        delta = timedelta(ca_config['days'])
 
         builder = x509.CertificateBuilder().subject_name(csr.subject)
         builder = builder.issuer_name(self.ca_certbundle.certificate.subject)
@@ -659,11 +619,11 @@ class CertificateAuthority:
         builder = builder.not_valid_before(datetime.utcnow())
         builder = builder.not_valid_after(datetime.utcnow() + delta)
         builder = builder.add_extension(
-                x509.SubjectKeyIdentifier.from_public_key(self.ca_certbundle.private_key.public_key()),
+                x509.SubjectKeyIdentifier.from_public_key(ca_public_key),
                 critical=False)
         builder = builder.add_extension(
                 x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(
-                x509.SubjectKeyIdentifier.from_public_key(self.ca_certbundle.private_key.public_key())),
+                x509.SubjectKeyIdentifier.from_public_key(ca_public_key)),
                 critical=False)
 
         if target == 'ca':
@@ -734,28 +694,29 @@ class CertificateAuthority:
                         x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
                         ]), critical=False)
 
-                cn = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
-                dns_names = [x509.DNSName(cn)]
+                common_name = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+                dns_names = [x509.DNSName(common_name)]
 
                 try:
-                    san_extension = csr.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
-                    san = san_extension.value
+                    san = csr.extensions.get_extension_for_oid(
+                        ExtensionOID.SUBJECT_ALTERNATIVE_NAME).value
                     dns_names.extend([name for name in san if isinstance(name, x509.DNSName)])
 
-                    combined_san_extension = x509.SubjectAlternativeName(dns_names)
+                    combined_san = x509.SubjectAlternativeName(dns_names)
 
-                    builder = builder.add_extension(combined_san_extension, critical=False)
+                    builder = builder.add_extension(combined_san, critical=False)
 
                 except x509.ExtensionNotFound:
-                    builder = builder.add_extension(x509.SubjectAlternativeName(dns_names), critical=False)
+                    builder = builder.add_extension(x509.SubjectAlternativeName(dns_names),
+                                                     critical=False)
 
                 # The CA and CRL URLs are stored in the CA config. When this object is instantiated
                 # it will self sign and not have those variables. If it is signed by a CA, the URLs
                 # will be pulled from the config.
-                if 'crl_url' in self.ca_config:
+                if 'crl_url' in ca_config:
                     crl_distribution_points = [
                         x509.DistributionPoint(
-                            full_name=[UniformResourceIdentifier(self.ca_config["crl_url"])],
+                            full_name=[UniformResourceIdentifier(ca_config["crl_url"])],
                             relative_name=None,
                             reasons=None,
                             crl_issuer=None
@@ -766,11 +727,11 @@ class CertificateAuthority:
                         x509.CRLDistributionPoints(crl_distribution_points),
                         critical=False)
 
-                if 'ca_url' in self.ca_config:
+                if 'ca_url' in ca_config:
                     aia_access_descriptions = [
                         x509.AccessDescription(
                             access_method=AuthorityInformationAccessOID.CA_ISSUERS,
-                            access_location=x509.UniformResourceIdentifier(self.ca_config["ca_url"])
+                            access_location=x509.UniformResourceIdentifier(ca_config["ca_url"])
                         )
                     ]
 
@@ -785,9 +746,28 @@ class CertificateAuthority:
             backend=default_backend()
         )
 
-        self.next_serial += 0
-
         return certificate
+
+    def store_ca_database(self):
+        """
+        Store a CA certificate database into 1Password
+
+        Args:
+            None
+
+        Returns:
+            subprocess.CompletedProcess: Output from 1Password CLI
+
+        Raises:
+            None
+        """
+
+        result = self.one_password.store_document(action='auto',
+                        item_title=self.op_config['ca_database_title'],
+                        filename=self.op_config['ca_database_filename'],
+                        str_in=self.ca_database.export_database().decode('utf-8'))
+
+        return result
 
     def store_certbundle(self, certbundle):
         """
@@ -806,76 +786,43 @@ class CertificateAuthority:
         item_title = certbundle.get_title()
         item_serial = certbundle.certificate.serial_number
 
-        if certbundle.is_valid() and item_title not in self.ca_database_cn:
+        if not certbundle.is_valid():
+            error('Certificate Bundle is not valid', 1)
 
-            if str(item_serial) not in self.ca_database_serial:
-                self.add_ca_database_item(certbundle.certificate)
+        if self.ca_database.query_cert(cert_info={'cn': item_title},
+                                        valid_only=True) is not None:
+            error('Certificate with a duplicate name exists', 1)
 
-            attributes = [f'{self.op_config["cert_type_item"]}=' + \
-                                f'{certbundle.get_type()}',
-                          f'{self.op_config["cn_item"]}=' + \
-                                f'{certbundle.get_certificate_attrib("cn")}',
-                          f'{self.op_config["subject_item"]}=' + \
-                                f'{certbundle.get_certificate_attrib("subject")}',
-                          f'{self.op_config["key_item"]}=' + \
-                                f'{certbundle.get_private_key()}',
-                          f'{self.op_config["cert_item"]}=' + \
-                                f'{certbundle.get_certificate()}',
-                          f'{self.op_config["start_date_item"]}=' + \
-                                f'{certbundle.get_certificate_attrib("not_before")}',
-                          f'{self.op_config["expiry_date_item"]}=' + \
-                                f'{certbundle.get_certificate_attrib("not_after")}',
-                          f'{self.op_config["revocation_date_item"]}=' + \
-                                f'{certbundle.revocation_date}',
-                          f'{self.op_config["serial_item"]}=' + \
-                                f'{ item_serial }',
-                          f'{self.op_config["csr_item"]}=' + \
-                                f'{certbundle.get_csr() or ""}'
-            ]
+        if self.ca_database.query_cert(cert_info={'serial': item_serial},
+                                        valid_only=True) is not None:
+            error('Certificate with a duplicate serial number exists', 1)
 
-            result = self.one_password.store_item(action='create',
-                                     item_title=item_title,
-                                     attributes=attributes)
-        else:
-            error('Certificate Object is invalid or already exists. Unable to store in 1Password', 1)
-
-        return result
-
-    def store_ca_database(self):
-        """
-        Store a CA certificate database into 1Password
-
-        Args:
-            None
-
-        Returns:
-            subprocess.CompletedProcess: Output from 1Password CLI
-
-        Raises:
-            None
-        """
-
-        attributes = [
-            f'{DEFAULT_OP_CONF["next_serial_item"]}={self.next_serial}',
-            f'{DEFAULT_OP_CONF["org_item"]}={self.ca_config.get("org", "")}',
-            f'{DEFAULT_OP_CONF["email_item"]}={self.ca_config.get("email", "")}',
-            f'{DEFAULT_OP_CONF["city_item"]}={self.ca_config.get("city", "")}',
-            f'{DEFAULT_OP_CONF["state_item"]}={self.ca_config.get("state", "")}',
-            f'{DEFAULT_OP_CONF["country_item"]}={self.ca_config.get("country", "")}',
-            f'{DEFAULT_OP_CONF["ca_url_item"]}={self.ca_config.get("ca_url", "")}',
-            f'{DEFAULT_OP_CONF["crl_url_item"]}={self.ca_config.get("crl_url", "")}',
-            f'{DEFAULT_OP_CONF["days_item"]}={self.ca_config.get("days", "")}',
-            f'{DEFAULT_OP_CONF["crl_days_item"]}={self.ca_config.get("crl_days", "")}',
+        attributes = [f'{self.op_config["cert_type_item"]}=' + \
+                            f'{certbundle.get_type()}',
+                        f'{self.op_config["cn_item"]}=' + \
+                            f'{certbundle.get_certificate_attrib("cn")}',
+                        f'{self.op_config["subject_item"]}=' + \
+                            f'{certbundle.get_certificate_attrib("subject")}',
+                        f'{self.op_config["key_item"]}=' + \
+                            f'{certbundle.get_private_key()}',
+                        f'{self.op_config["cert_item"]}=' + \
+                            f'{certbundle.get_certificate()}',
+                        f'{self.op_config["start_date_item"]}=' + \
+                            f'{certbundle.get_certificate_attrib("not_before")}',
+                        f'{self.op_config["expiry_date_item"]}=' + \
+                            f'{certbundle.get_certificate_attrib("not_after")}',
+                        f'{self.op_config["serial_item"]}=' + \
+                            f'{ item_serial }',
+                        f'{self.op_config["csr_item"]}=' + \
+                            f'{certbundle.get_csr() or ""}'
         ]
 
-        for cert in self.ca_database:
-            attributes.append(f'{cert["serial"]}.cn[text]={cert["cn"]}')
-            attributes.append(f'{cert["serial"]}.status[text]={cert["status"]}')
-            attributes.append(f'{cert["serial"]}.expiry_date[text]={cert["expiry_date"]}')
-            attributes.append(f'{cert["serial"]}.revocation_date[text]={cert["revocation_date"]}')
-            attributes.append(f'{cert["serial"]}.subject[text]={cert["subject"]}')
+        result = self.one_password.store_item(action='create',
+                                    item_title=item_title,
+                                    attributes=attributes)
 
-        result = self.one_password.edit_or_create(item_title=self.op_config['ca_database_title'],
-                                attributes=attributes)
+        if self.ca_database.add_cert(self.format_db_item(certificate=certbundle.certificate,
+                                                         item_title=item_title)):
+            self.store_ca_database()
 
         return result

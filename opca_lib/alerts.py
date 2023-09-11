@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 #
 # opca_lib/alerts.py
@@ -38,26 +37,6 @@ def error(error_msg, exit_code):
 
     print(f'{error_colour}Error:{reset} {error_msg}')
     sys.exit(exit_code)
-
-def print_cmd_result(returncode, ok_msg='  OK  ', failed_msg='FAILED'):
-    """
-    Prints a ANSI success or failure message in a RedHat theme
-
-    Args:
-        returncode (int): Return code from subprocess. 0 = success
-        ok_msg (str): OK message text
-        failed_msg (str): Failed message text
-    
-    Returns:
-        None
-
-    Raises:
-        None
-    """
-
-    success = bool(returncode == 0)
-
-    print_result(success, ok_msg, failed_msg)
 
 def print_result(success, ok_msg='  OK  ', failed_msg='FAILED'):
     """

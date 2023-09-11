@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 #
 # opca_lib/op.py
@@ -13,9 +12,17 @@ import subprocess
 import sys
 from opca_lib.alerts import error
 
+# Configuration
+OP_BIN = 'op'
+
 DEFAULT_OP_CONF = {
     'category': 'Secure Note',
     'ca_title': 'CA',
+    'ca_database_title': 'CA_Database',
+    'ca_database_filename': 'ca-db-export.sql',
+    'crl_title': 'CRL',
+    'crl_filename': 'crl.pem',
+    'openvpn_title': 'OpenVPN',
     'cn_item': 'cn[text]',
     'subject_item': 'subject[text]',
     'key_item': 'private_key',
@@ -26,24 +33,11 @@ DEFAULT_OP_CONF = {
     'csr_item': 'certificate_signing_request',
     'start_date_item': 'not_before[text]',
     'expiry_date_item': 'not_after[text]',
-    'revocation_date_item': 'revocation_date[text]',
     'serial_item': 'serial[text]',
-    'openvpn_title': 'OpenVPN',
     'dh_item': 'diffie-hellman.dh_parameters',
     'dh_key_size_item': 'diffie-hellman.key_size[text]',
     'ta_item': 'tls_authentication.static_key',
-    'ta_key_size_item': 'tls_authentication.key_size[text]',
-    'ca_database_title': 'CA_Database',
-    'next_serial_item': 'config.next_serial[text]',
-    'org_item': 'config.org[text]',
-    'email_item': 'config.email[text]',
-    'city_item': 'config.city[text]',
-    'state_item': 'config.state[text]',
-    'country_item': 'config.country[text]',
-    'ca_url_item': 'config.ca_url[text]',
-    'crl_url_item': 'config.crl_url[text]',
-    'days_item': 'config.days[text]',
-    'crl_days_item': 'config.crl_days[text]'
+    'ta_key_size_item': 'tls_authentication.key_size[text]'
 }
 
 def run_command(command, text=True, shell=False, stdin=None, str_in=None, env_vars=None):
@@ -68,7 +62,7 @@ def run_command(command, text=True, shell=False, stdin=None, str_in=None, env_va
     try:
         result = subprocess.run(command, env=env_vars, stdin=stdin, input=str_in,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=text, shell=shell)
+                                text=text, shell=shell, check=False)
 
         return result
 
@@ -121,32 +115,6 @@ class Op:
 
         return result
 
-    def edit_or_create(self, item_title, attributes):
-        """
-        CRUD helper. Store an item by either editing or creating
-
-        Args:
-            item_title (str): The title of the 1Password object
-            attributes (dict): The object attributes to write to 1Password
-
-        Returns:
-            subprocess.CompletedProcess: Output from 1Password CLI
-
-        Raises:
-            None
-        """
-
-        result = self.store_item(action='edit',
-                            item_title=item_title,
-                            attributes=attributes)
-
-        if result.returncode != 0:
-            result = self.store_item(action='create',
-                                item_title=item_title,
-                                attributes=attributes)
-
-        return result
-
     def get_current_user_details(self):
         """
         Return the current 1Password CLI user details
@@ -162,6 +130,24 @@ class Op:
         """
 
         result = run_command([self.bin, 'user', 'get', '--me'])
+
+        return result
+
+    def get_document(self, item_title):
+        """
+        Retrieve the contents of a document in 1Password
+
+        Args:
+            item_title (str): The title of the 1Password object
+
+        Returns:
+            subprocess.CompletedProcess
+
+        Raises:
+            None
+        """
+
+        result = run_command([self.bin, 'document', 'get', item_title, f'--vault={self.vault}'])
 
         return result
 
@@ -314,18 +300,27 @@ class Op:
             None
         """
 
-        if action == 'create':
-            cmd = [self.bin, 'document', action, f'--title={item_title}',
-                                                 f'--vault={self.vault}',
-                                                 f'--file-name={filename}']
-        else:
+        if action not in ['auto', 'create', 'edit']:
             error(f'Unknown storage command {action}', 1)
 
-        result=run_command(cmd, str_in=str_in)
+        if action == 'auto':
+            if self.item_exists(item_title):
+                action = 'edit'
+            else:
+                action = 'create'
+
+        if action == 'create':
+            item_title = f'--title={item_title}'
+
+        cmd = [self.bin, 'document', action, item_title,
+                f'--vault={self.vault}', f'--file-name={filename}']
+
+        result = run_command(cmd, str_in=str_in)
 
         return result
 
-    def store_item(self, item_title, attributes, action='create', category='Secure Note'):
+    def store_item(self, item_title, attributes=None, action='auto',
+                   category='Secure Note', str_in=None):
         """
         Store an item in 1Password
 
@@ -334,6 +329,7 @@ class Op:
             attributes (list): A list of strings containing the item attributes
             action (str): CRUD action
             category (str): The 1Password category to use. Secure Note is the default.
+            std_in (str): A value to pass in via stdin instead of dealing with attributes
 
         Returns:
             subprocess.CompletedProcess: Output from 1Password CLI
@@ -342,21 +338,27 @@ class Op:
             None
         """
 
-        if action == 'create':
-            if not self.item_exists(item_title):
-                cmd = [self.bin, 'item', action, f'--category={category}',
-                                                 f'--title={item_title}',
-                                                 f'--vault={self.vault}']
-            else:
-                error(f'Item {item_title} already exists. Aborting', 1)
-        elif action == 'edit':
-            cmd = [self.bin, 'item', action, f'{item_title}', f'--vault={self.vault}']
-        else:
+        if action not in ['auto', 'create', 'edit']:
             error(f'Unknown storage command {action}', 1)
 
-        cmd.extend(attributes)
+        if action == 'auto':
+            if self.item_exists(item_title):
+                action = 'edit'
+            else:
+                action = 'create'
 
-        result=run_command(cmd)
+        if action == 'create':
+            item_title = f'--title={item_title}'
+
+        cmd = [self.bin, 'item', action, item_title, f'--vault={self.vault}']
+
+        if category is not None and action == 'create':
+            cmd.append(f'--category={ category }')
+
+        if attributes is not None:
+            cmd.extend(attributes)
+
+        result=run_command(cmd, str_in=str_in)
 
         return result
 

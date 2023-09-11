@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 #
 # opca_lib/certificate_bundle.py
@@ -20,6 +19,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding
 from opca_lib.alerts import error
+from opca_lib.date import format_datetime
 
 class CertificateBundle:
     """ Class to contain x509 Certificates, Private Keys and Signing Requests """
@@ -40,7 +40,6 @@ class CertificateBundle:
         self.private_key = None
         self.private_key_passphrase = None # TODO: Implement private key passphrase
         self.certificate = None
-        self.revocation_date = ''
         self.config_attrs = (
             'org',
             'city',
@@ -59,9 +58,6 @@ class CertificateBundle:
             if 'csr' in self.config:
                 self.csr = x509.load_pem_x509_csr(self.config['csr'], default_backend())
 
-            if 'revocation_date' in self.config:
-                self.revocation_date = self.config['revocation_date']
-
             if not self.title:
                 self.title = self.get_certificate_attrib('cn')
 
@@ -77,24 +73,6 @@ class CertificateBundle:
             self.private_key = self.generate_private_key(key_size=config['key_size'])
             self.csr = self.generate_csr(private_key=self.private_key, cert_cn=self.config['cn'])
             self.certificate = self.sign_certificate(self.csr)
-
-    def format_datetime(self, date, timezone='UTC'):
-        """
-        Format a datetime to match OpenSSL text
-
-        Args:
-            date (datetime): The datetime object we are working with
-            timezone (str):  The timezone we are working with
-        
-        Returns:
-            str
-
-        Raises:
-            None
-        """
-        format_string = f'%b %d %H:%M:%S %Y {timezone}'
-
-        return date.strftime(format_string)
 
     def get_certificate(self):
         """
@@ -126,54 +104,32 @@ class CertificateBundle:
             None
         """
 
-        attr_value = None
+        def get_attribute_for_oid(oid):
+            attribute = self.certificate.subject.get_attributes_for_oid(oid)
+            return attribute[0].value if attribute else None
 
-        if attrib == 'cn':
-            attribute = self.certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-            if len(attribute) > 0:
-                attr_value = attribute[0].value
-        elif attrib == 'not_before':
-            attr_value = self.format_datetime(self.certificate.not_valid_before)
-        elif attrib == 'not_after':
-            attr_value = self.format_datetime(self.certificate.not_valid_after)
-        elif attrib == 'issuer':
-            attr_value = self.certificate.issuer
-        elif attrib == 'subject':
-            attr_value = self.certificate.subject.rfc4514_string()
-        elif attrib == 'serial':
-            attr_value = self.certificate.serial_number
-        elif attrib == 'version':
-            attr_value = self.certificate.version
-        elif attrib == 'org':
-            attribute = self.certificate.subject.get_attributes_for_oid(
-                NameOID.ORGANIZATION_NAME)
-            if len(attribute) > 0:
-                attr_value = attribute[0].value
-        elif attrib == 'email':
-            attribute = self.certificate.subject.get_attributes_for_oid(
-                NameOID.EMAIL_ADDRESS)
-            if len(attribute) > 0:
-                attr_value = attribute[0].value
-        elif attrib == 'city':
-            attribute = self.certificate.subject.get_attributes_for_oid(
-                NameOID.LOCALITY_NAME)
-            if len(attribute) > 0:
-                attr_value = attribute[0].value
-        elif attrib == 'state':
-            attribute = self.certificate.subject.get_attributes_for_oid(
-                NameOID.STATE_OR_PROVINCE_NAME)
-            if len(attribute) > 0:
-                attr_value = attribute[0].value
-        elif attrib == 'country':
-            attribute = self.certificate.subject.get_attributes_for_oid(
-                NameOID.COUNTRY_NAME)
-            if len(attribute) > 0:
-                attr_value = attribute[0].value
-        elif attrib == 'basic_constraints':
-            attr_value = self.certificate.extensions.get_extension_for_oid(
-                ExtensionOID.BASIC_CONSTRAINTS)
+        attrib_map = {
+            'cn': lambda: get_attribute_for_oid(NameOID.COMMON_NAME),
+            'not_before': lambda: format_datetime(self.certificate.not_valid_before,
+                                                  output_format='text'),
+            'not_after': lambda: format_datetime(self.certificate.not_valid_after,
+                                                  output_format='text'),
+            'issuer': self.certificate.issuer,
+            'subject': self.certificate.subject.rfc4514_string(),
+            'serial': self.certificate.serial_number,
+            'version': self.certificate.version,
+            'org': lambda: get_attribute_for_oid(NameOID.ORGANIZATION_NAME),
+            'email': lambda: get_attribute_for_oid(NameOID.EMAIL_ADDRESS),
+            'city': lambda: get_attribute_for_oid(NameOID.LOCALITY_NAME),
+            'state': lambda: get_attribute_for_oid(NameOID.STATE_OR_PROVINCE_NAME),
+            'country': lambda: get_attribute_for_oid(NameOID.COUNTRY_NAME),
+            'basic_constraints': lambda: self.certificate.extensions.
+                    get_extension_for_oid(ExtensionOID.BASIC_CONSTRAINTS)
+        }
 
-        return attr_value
+        func = attrib_map.get(attrib)
+
+        return func() if callable(func) else func
 
     def get_config(self, attr='all'):
         """
@@ -306,7 +262,8 @@ class CertificateBundle:
             x509_attributes.append(x509.NameAttribute(
                 NameOID.EMAIL_ADDRESS, self.config['email']))
 
-        csr_builder = x509.CertificateSigningRequestBuilder().subject_name(x509.Name(x509_attributes)) 
+        csr_builder = (x509.CertificateSigningRequestBuilder()
+                       .subject_name(x509.Name(x509_attributes)))
 
         if 'alt_dns_names' in self.config:
             san_list = [x509.DNSName(name) for name in self.config['alt_dns_names']]
@@ -390,7 +347,7 @@ class CertificateBundle:
 
     def is_valid(self):
         """
-        Returns true if the certificate budle private key and certificate are consistent
+        Returns true if the certificate bundle private key and certificate are consistent
 
         Args:
             None
@@ -528,7 +485,8 @@ class CertificateBundle:
                 dns_names = [x509.DNSName(self.config['cn'])]
 
                 if 'alt_dns_names' in self.config:
-                    dns_names.extend([x509.DNSName(hostname) for hostname in self.config['alt_dns_names']])
+                    dns_names.extend(
+                        [x509.DNSName(hostname) for hostname in self.config['alt_dns_names']])
 
                     builder = builder.add_extension(
                         x509.SubjectAlternativeName(dns_names), critical=False,)
