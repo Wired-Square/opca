@@ -231,7 +231,7 @@ class CertificateAuthority:
         builder = builder.add_extension(x509.CRLNumber(crl_serial), critical=False)
 
         for cert in self.ca_database.certs_revoked:
-            serial_number = cert['serial']
+            serial_number = int(cert['serial'])
             revocation_date = datetime.strptime(cert['revocation_date'], '%Y%m%d%H%M%SZ')
 
             revoked_cert = x509.RevokedCertificateBuilder().serial_number(

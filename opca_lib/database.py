@@ -64,6 +64,7 @@ class CertificateAuthorityDB:
         Returns:
             bool:  True if the insert succeeded, False otherwise
         """
+        cert_db_item['serial'] = str(cert_db_item['serial'])
         cursor = self.conn.cursor()
 
         columns = ', '.join(cert_db_item.keys())
@@ -84,7 +85,7 @@ class CertificateAuthorityDB:
         cursor = self.conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS certificate_authority (
-                serial INTEGER PRIMARY KEY,
+                serial TEXT PRIMARY KEY,
                 cn TEXT,
                 title TEXT,
                 status TEXT,
@@ -101,8 +102,8 @@ class CertificateAuthorityDB:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS config (
                 id INTEGER PRIMARY KEY,
-                next_serial INTEGER,
-                next_crl_serial INTEGER,
+                next_serial TEXT,
+                next_crl_serial TEXT,
                 org TEXT,
                 email TEXT,
                 city TEXT,
@@ -155,7 +156,17 @@ class CertificateAuthorityDB:
         row = cursor.fetchone()
 
         if row:
-            return dict(zip(self.config_attrs, row))
+            result = dict(zip(self.config_attrs, row))
+
+            result['next_serial'] = int(result['next_serial'])
+
+            try:
+                result['next_crl_serial'] = int(result['next_crl_serial'])
+
+            except ValueError:
+                pass
+
+            return result
 
         return None
 
@@ -184,9 +195,9 @@ class CertificateAuthorityDB:
             raise ValueError("Invalid serial type. Expected 'cert' or 'crl'.")
 
         cursor.execute(f"SELECT { column_name } FROM config LIMIT 1")
-        current_value = cursor.fetchone()[0]
+        current_value = int(cursor.fetchone()[0])
 
-        cursor.execute(f"UPDATE config SET { column_name } = { column_name } + 1")
+        cursor.execute(f"UPDATE config SET { column_name } = { current_value + 1 }")
 
         self.conn.commit()
 
@@ -206,6 +217,11 @@ class CertificateAuthorityDB:
             None
         """
         cursor = self.conn.cursor()
+
+        if 'next_serial' in config:
+            config['next_serial'] = str(config['next_serial'])
+        if 'next_crl_serial' in config:
+            config['next_crl_serial'] = str(config['next_crl_serial'])
 
         if config['command'] == 'rebuild-ca-database':
             if config['next_crl_serial'] is None:
@@ -353,12 +369,17 @@ class CertificateAuthorityDB:
         Update the config table with the provided data.
 
         Args:
-            config_data (dict): Dictionary containing the configuration data to update.
+            config (dict): Dictionary containing the configuration data to update.
 
         Returns:
             bool: True if the update succeeded, False otherwise.
         """
         cursor = self.conn.cursor()
+
+        if 'next_serial' in config:
+            config['next_serial'] = str(config['next_serial'])
+        if 'next_crl_serial' in config:
+            config['next_crl_serial'] = str(config['next_crl_serial'])
 
         valid_data = {k: v for k, v in config.items() if k in self.config_attrs}
 

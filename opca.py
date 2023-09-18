@@ -18,7 +18,7 @@ from opca_lib.command_database import handle_database_action
 from opca_lib.command_manage import handle_manage_action
 
 # Constants
-OPCA_VERSION        = "0.13.1"
+OPCA_VERSION        = "0.13.2"
 OPCA_TITLE          = "1Password Certificate Authority"
 OPCA_SHORT_TITLE    = "OPCA"
 OPCA_AUTHOR         = "Alex Ferrara <alex@wiredsquare.com>"
