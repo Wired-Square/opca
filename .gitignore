@@ -2,3 +2,6 @@
 .pylintrc
 *.pyc
 __pycache__/
+*.crt
+*.pem
+*.key
