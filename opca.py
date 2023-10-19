@@ -29,7 +29,7 @@ from cryptography.exceptions import InvalidSignature
 
 
 # Constants
-OPCA_VERSION        = '0.14.0'
+OPCA_VERSION        = '0.14.1'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -666,7 +666,7 @@ def handle_openvpn_action(openvpn_action, cli_args):
 
         title('Storing VPN profile in 1Password', 9)
         one_password.store_document(op_action='create', item_title=f'VPN_{cli_args.cn}',
-                        filename=f'{cli_args.cn}-{cli_args.template}.ovpn', str_in=ovpn_template)
+                        filename=f'{cli_args.cn}-{cli_args.template}.ovpn', str_in=result.stdout)
         print_result(result.returncode == 0)
 
     elif openvpn_action == 'get-dh':
