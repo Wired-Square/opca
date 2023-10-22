@@ -29,7 +29,7 @@ from cryptography.exceptions import InvalidSignature
 
 
 # Constants
-OPCA_VERSION        = '0.14.1'
+OPCA_VERSION        = '0.14.2'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -138,7 +138,9 @@ def error(error_msg, exit_code):
     reset = COLOUR['reset']
 
     print(f'{error_colour}Error:{reset} {error_msg}')
-    sys.exit(exit_code)
+
+    if exit_code != 0:
+        sys.exit(exit_code)
 
 def format_datetime(date, output_format='openssl'):
     """
@@ -363,25 +365,55 @@ def handle_cert_action(cert_action, cli_args):
 
     if cert_action == 'create':
         cert_authority = prepare_cert_authority(one_password)
+        certs_to_create = []
 
         if one_password.item_exists(cli_args.cn):
             error(f'CN {cli_args.cn} already exists. Aborting', 1)
 
         cert_config = cert_authority.ca_certbundle.get_config()
-        cert_config['cn'] = cli_args.cn
         cert_config['key_size'] = DEFAULT_KEY_SIZE[cli_args.cert_type]
 
-        if cli_args.alt is not None:
-            cert_config['alt_dns_names'] = cli_args.alt
+        if cli_args.cn:
+            cert_config['cn'] = cli_args.cn
 
-        title(f'Generating a certificate bundle for {COLOUR_BRIGHT}{cli_args.cn}{COLOUR_RESET}', 9)
+            if cli_args.alt is not None:
+                cert_config['alt_dns_names'] = cli_args.alt
 
-        new_certificate_bundle = cert_authority.generate_certificate_bundle(
-            cert_type=cli_args.cert_type,
-            item_title=cli_args.cn,
-            config=cert_config)
+            certs_to_create.append(cert_config)
 
-        print_result(new_certificate_bundle.is_valid())
+        elif cli_args.file:
+            for line in read_file(file_path=cli_args.file, file_mode='r').split('\n'):
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                if line.startswith('#'):
+                    continue
+
+                tmp_config = cert_config.copy()
+
+                hostnames = line.split('--alt')
+
+                tmp_config['cn'] = hostnames[0].strip()
+
+                if len(hostnames) > 1:
+                    tmp_config['alt_dns_names'] = [alt.strip() for alt in hostnames[1:]]
+
+                certs_to_create.append(tmp_config)
+
+        else:
+            error(f'Subcommand has not been written:  { cli_args }', 1)
+
+        for cert_info in certs_to_create:
+            title(f'Generating a certificate bundle for {COLOUR_BRIGHT}{cert_info["cn"]}{COLOUR_RESET}', 9)
+
+            new_certificate_bundle = cert_authority.generate_certificate_bundle(
+                cert_type=cli_args.cert_type,
+                item_title=cert_info['cn'],
+                config=cert_info)
+
+            print_result(new_certificate_bundle.is_valid())
 
     elif cert_action == 'import':
         cert_authority = prepare_cert_authority(one_password)
@@ -443,20 +475,63 @@ def handle_cert_action(cert_action, cli_args):
 
     elif cert_action == 'revoke':
         cert_authority = prepare_cert_authority(one_password)
-        cert_info = {}
+        certs_to_revoke = []
 
         if cli_args.serial:
-            cert_info['serial'] = cli_args.serial
-            desc = f'Serial: {cli_args.serial}'
+            cert_info = {
+                'serial': cli_args.serial,
+            }
+
+            certs_to_revoke.append(cert_info)
+
+        elif cli_args.cn:
+            cert_info = {
+                'cn': cli_args.cn,
+            }
+
+            certs_to_revoke.append(cert_info)
+
+        elif cli_args.file:
+            for line in read_file(file_path=cli_args.file, file_mode='r').split('\n'):
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                if line.startswith('#'):
+                    continue
+
+                cert_info = {
+                    'cn': line.split('--alt')[0].strip(),
+                }
+
+                certs_to_revoke.append(cert_info)
+
         else:
-            cert_info['cn'] = cli_args.cn
-            desc = cli_args.cn
+            error(f'Subcommand has not been written:  { cli_args }', 1)
 
-        title(f'Revoking the certificate [ { COLOUR_BRIGHT }{ desc }{ COLOUR_RESET } ]', 8)
+        for cert_info in certs_to_revoke:
 
-        if cert_authority.revoke_certificate(cert_info=cert_info):
+            generate_crl = False
+
+            if 'cn' in cert_info:
+                desc = cert_info['cn']
+            elif 'serial' in cert_info:
+                desc = f'Serial: { cert_info["serial"] }'
+            else:
+                error('Certificate requires either a cn or serial', 1)
+
+            title(f'Revoking the certificate [ { COLOUR_BRIGHT }{ desc }{ COLOUR_RESET } ]', 9)
+
+            if cert_authority.revoke_certificate(cert_info=cert_info):
+                print_result(success=True)
+                generate_crl = True
+
+            else:
+                print_result(success=False)
+
+        if generate_crl:
             print(cert_authority.generate_crl())
-
 
     else:
         error('This feature is not yet written', 99)
@@ -887,7 +962,7 @@ def print_result(success, ok_msg='  OK  ', failed_msg='FAILED'):
         failed_msg (str): Failed message text
     
     Returns:
-        None
+        success (bool): A passthrough of the success
 
     Raises:
         None
@@ -904,12 +979,15 @@ def print_result(success, ok_msg='  OK  ', failed_msg='FAILED'):
 
     print(f'{column}[ {msg_colour}{msg}{COLOUR_RESET} ]')
 
-def read_file(file_path):
+    return success
+
+def read_file(file_path, file_mode='rb'):
     """
     Read the contents of a file
 
     Args:
         file_path (str): The file to be read
+        file_mode (str): The method to open the file. Default is to Read as Bytes
 
     Returns:
         bytes: The contents of the file
@@ -920,7 +998,7 @@ def read_file(file_path):
     content = None
 
     try:
-        with open(file_path, 'rb') as file:
+        with open(file_path, file_mode) as file:
             content = file.read()
     except FileNotFoundError:
         error(f"File '{file_path}' not found.", 1)
@@ -1050,8 +1128,12 @@ def setup_cert_subparser(subparsers):
 
     subparser_action_create_cert = parser_cert_actions.add_parser('create',
         help='Create a new x509 CertificateBundle object')
-    subparser_action_create_cert.add_argument('-n', '--cn', required=True,
+    subparser_group_create_cert = subparser_action_create_cert.add_mutually_exclusive_group(
+        required=True)
+    subparser_group_create_cert.add_argument('-n', '--cn',
         help='CN attribute. Regular certificates use this for the 1Password title.')
+    subparser_group_create_cert.add_argument('-f', '--file',
+        help='Bulk host file')
     subparser_action_create_cert.add_argument('-t', '--cert-type', required=True,
         help='x509 Certificate type', choices=['vpnserver', 'vpnclient', 'webserver'])
     subparser_action_create_cert.add_argument('-s', '--serial', required=False, type=int,
@@ -1081,6 +1163,8 @@ def setup_cert_subparser(subparsers):
         help='Create a new x509 CertificateBundle object')
     subparser_group_revoke_cert = subparser_action_revoke_cert.add_mutually_exclusive_group(
         required=True)
+    subparser_group_revoke_cert.add_argument('-f', '--file',
+        help='Bulk host file')
     subparser_group_revoke_cert.add_argument('-n', '--cn',
         help='x509 CN of the certificate to revoke')
     subparser_group_revoke_cert.add_argument('-s', '--serial', type=int,
@@ -1496,10 +1580,15 @@ class CertificateAuthority:
         crl_serial = self.ca_database.increment_serial('crl')
         builder = builder.add_extension(x509.CRLNumber(crl_serial), critical=False)
 
-        for cert in self.ca_database.certs_revoked:
-            print(cert)
-            serial_number = int(cert['serial'])
-            revocation_date = datetime.strptime(cert['revocation_date'], '%Y%m%d%H%M%SZ')
+        for cert_serial in self.ca_database.certs_revoked:
+            cert_info = {
+                'serial': cert_serial
+            }
+
+            cert_db_record = self.ca_database.query_cert(cert_info=cert_info, valid_only=False)
+
+            serial_number = int(cert_serial)
+            revocation_date = datetime.strptime(cert_db_record['revocation_date'], '%Y%m%d%H%M%SZ')
 
             revoked_cert = x509.RevokedCertificateBuilder().serial_number(
                 serial_number).revocation_date(revocation_date).build(default_backend())
@@ -1851,6 +1940,7 @@ class CertificateAuthority:
 
         if not cert:
             error(f'Certificate with { cert_info } not found. Aborting', 0)
+            return False
 
         item_serial = cert['serial']
         item_title = cert['title']
@@ -1867,7 +1957,7 @@ class CertificateAuthority:
                     error(f'Unable to rename the certificate bundle { item_title } '
                           f'[ { item_serial } ]', 1)
 
-                return rename_result == 0
+                return rename_result.returncode == 0
 
             return True
 
@@ -2072,11 +2162,15 @@ class CertificateAuthority:
 
         if self.ca_database.query_cert(cert_info={'cn': item_title},
                                         valid_only=True) is not None:
-            error('Certificate with a duplicate name exists', 1)
+            error('Certificate with a duplicate name exists', 0)
+            # TODO: If we get here, the status on create is OK but shows an error
+            return False
 
         if self.ca_database.query_cert(cert_info={'serial': item_serial},
                                         valid_only=True) is not None:
-            error('Certificate with a duplicate serial number exists', 1)
+            error('Certificate with a duplicate serial number exists', 0)
+            # TODO: If we get here, the status on create is OK but shows an error
+            return False
 
         attributes = [f'{self.op_config["cert_type_item"]}=' + \
                             f'{certbundle.get_type()}',
@@ -2491,6 +2585,7 @@ class CertificateAuthorityDB:
         Args:
             cert_info (dict): key - The certificate attribute (cn, title or serial)
                             value - The attribute data
+            valid_only (bool): Only show valid results by default
 
         Returns:
             dict or None
@@ -3177,7 +3272,7 @@ class Op:
             None
         """
 
-        cmd = [self.bin, 'item', 'delete', item_title]
+        cmd = [self.bin, 'item', 'delete', item_title, '--vault', self.vault]
 
         if archive:
             cmd.append('--archive')
