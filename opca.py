@@ -17,7 +17,7 @@ import secrets
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from cryptography import x509
 from cryptography.x509 import UniformResourceIdentifier
 from cryptography.x509.oid import AuthorityInformationAccessOID, ExtensionOID, NameOID
@@ -29,7 +29,7 @@ from cryptography.exceptions import InvalidSignature
 
 
 # Constants
-OPCA_VERSION        = '0.14.2'
+OPCA_VERSION        = '0.15.0'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -1494,7 +1494,7 @@ class CertificateAuthority:
             None
         """
 
-        expired = datetime.utcnow() > certificate.not_valid_after
+        expired = datetime.now(timezone.utc) > certificate.not_valid_after_utc
 
         if expired:
             status = 'Expired'
@@ -1506,7 +1506,7 @@ class CertificateAuthority:
             'cn': certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value,
             'title': item_title,
             'status': status,
-            'expiry_date': format_datetime(certificate.not_valid_after),
+            'expiry_date': format_datetime(certificate.not_valid_after_utc),
             'subject': certificate.subject.rfc4514_string()
         }
 
@@ -1987,8 +1987,8 @@ class CertificateAuthority:
         builder = builder.issuer_name(self.ca_certbundle.certificate.subject)
         builder = builder.public_key(csr.public_key())
         builder = builder.serial_number(int(certificate_serial))
-        builder = builder.not_valid_before(datetime.utcnow())
-        builder = builder.not_valid_after(datetime.utcnow() + delta)
+        builder = builder.not_valid_before(datetime.now(timezone.utc))
+        builder = builder.not_valid_after(datetime.now(timezone.utc) + delta)
         builder = builder.add_extension(
                 x509.SubjectKeyIdentifier.from_public_key(ca_public_key),
                 critical=False)
@@ -2792,9 +2792,9 @@ class CertificateBundle:
 
         attrib_map = {
             'cn': lambda: get_attribute_for_oid(NameOID.COMMON_NAME),
-            'not_before': lambda: format_datetime(self.certificate.not_valid_before,
+            'not_before': lambda: format_datetime(self.certificate.not_valid_before_utc,
                                                   output_format='text'),
-            'not_after': lambda: format_datetime(self.certificate.not_valid_after,
+            'not_after': lambda: format_datetime(self.certificate.not_valid_after_utc,
                                                   output_format='text'),
             'issuer': self.certificate.issuer,
             'subject': self.certificate.subject.rfc4514_string(),
@@ -3045,7 +3045,9 @@ class CertificateBundle:
         Raises:
             None
         """
-        current_time = datetime.now()
+        current_time = datetime.now(timezone.utc)
+        not_valid_before = self.certificate.not_valid_before_utc.replace(tzinfo=timezone.utc)
+        not_valid_after = self.certificate.not_valid_after_utc.replace(tzinfo=timezone.utc)
 
         if not self.private_key:
             # No private key, we only care about validity
@@ -3064,7 +3066,7 @@ class CertificateBundle:
         if self.type == 'ca' and not self.is_ca_certificate():
             return False
 
-        return self.certificate.not_valid_before <= current_time <= self.certificate.not_valid_after
+        return not_valid_before <= current_time <= not_valid_after
 
     def sign_certificate(self, csr):
         """
@@ -3091,8 +3093,8 @@ class CertificateBundle:
         builder = builder.issuer_name(csr.subject)
         builder = builder.public_key(csr.public_key())
         builder = builder.serial_number(int(certificate_serial))
-        builder = builder.not_valid_before(datetime.utcnow())
-        builder = builder.not_valid_after(datetime.utcnow() + delta)
+        builder = builder.not_valid_before(datetime.now(timezone.utc))
+        builder = builder.not_valid_after(datetime.now(timezone.utc) + delta)
         builder = builder.add_extension(
                 x509.SubjectKeyIdentifier.from_public_key(self.private_key.public_key()),
                 critical=False)
