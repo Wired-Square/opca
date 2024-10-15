@@ -1574,8 +1574,8 @@ class CertificateAuthority:
                                 self.ca_certbundle.get_certificate_attrib('cn')),
         ]))
 
-        builder = builder.last_update(datetime.utcnow())
-        builder = builder.next_update(datetime.utcnow() + timedelta(crl_days))
+        builder = builder.last_update(datetime.now(timezone.utc))
+        builder = builder.next_update(datetime.now(timezone.utc) + timedelta(crl_days))
 
         crl_serial = self.ca_database.increment_serial('crl')
         builder = builder.add_extension(x509.CRLNumber(crl_serial), critical=False)
@@ -1724,7 +1724,7 @@ class CertificateAuthority:
             return False
 
         # 2. Date Validity
-        current_date = datetime.utcnow()
+        current_date = datetime.now(timezone.utc)
         if certificate.not_valid_before <= current_date <= certificate.not_valid_after:
             return True
 
@@ -1755,7 +1755,7 @@ class CertificateAuthority:
             return False
 
         # 2. Date Validity
-        current_date = datetime.utcnow()
+        current_date = datetime.now(timezone.utc)
         if crl.last_update <= current_date <= crl.next_update:
             return True
 
@@ -2540,11 +2540,11 @@ class CertificateAuthorityDB:
         for cert in all_cert_dicts:
             cert_changed = False
 
-            expiry_date = datetime.strptime(cert['expiry_date'], '%Y%m%d%H%M%SZ')
+            expiry_date = datetime.strptime(cert['expiry_date'], '%Y%m%d%H%M%SZ').replace(tzinfo=timezone.utc)
 
-            expired = datetime.utcnow() > expiry_date
+            expired = datetime.now(timezone.utc) > expiry_date
 
-            expires_soon = datetime.utcnow() + timedelta(expiry_warning_days) > expiry_date
+            expires_soon = datetime.now(timezone.utc) + timedelta(expiry_warning_days) > expiry_date
             revoked = bool(cert['revocation_date']) or (cert['status'] == 'Revoked')
 
             if revoke_serial is not None:
@@ -2552,7 +2552,7 @@ class CertificateAuthorityDB:
                     revoked = True
                     cert_changed = True
                     db_changed = True
-                    cert['revocation_date'] = format_datetime(datetime.utcnow())
+                    cert['revocation_date'] = format_datetime(datetime.now(timezone.utc))
 
             if expired:
                 if cert['status'] != 'Expired':
