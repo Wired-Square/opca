@@ -29,7 +29,7 @@ from cryptography.exceptions import InvalidSignature
 
 
 # Constants
-OPCA_VERSION        = '0.15.1'
+OPCA_VERSION        = '0.15.2'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -1479,6 +1479,28 @@ class CertificateAuthority:
         else:
             error('Unknown CA command', 0)
 
+    def delete_certbundle(self, item_title, archive=True):
+        """
+        Delete a certificate bundle in 1Password
+
+        Args:
+            item_title (str): The 1Password object that contains a certificate bundle
+            archive (bool): Archive the item in 1Password
+
+        Returns:
+            bool: True if the update succeeded, False otherwise.
+
+        Raises:
+            None
+        """
+        db_item = self.ca_database.query_cert(cert_info={'title': item_title},
+                                              valid_only=False)
+
+        if self.ca_database.update_cert(db_item):
+            return self.one_password.delete_item(item_title=item_title, archive=archive)
+
+        return False
+
     def format_db_item(self, certificate, item_title=None):
         """
         Format a certificate db item from a certificate
@@ -1874,7 +1896,7 @@ class CertificateAuthority:
         db_item['title'] = dst_item_title
 
         if self.ca_database.update_cert(db_item) and self.store_ca_database().returncode == 0:
-            return self.one_password.delete_item(src_item_title)
+            return self.one_password.delete_item(src_item_title, archive=False)
 
         return False
 
@@ -1950,14 +1972,13 @@ class CertificateAuthority:
             self.store_ca_database()
 
             if item_title != str(item_serial):
-                rename_result = self.rename_certbundle(src_item_title=item_title,
-                                                    dst_item_title=item_serial)
+                result = self.delete_certbundle(item_title=item_title, archive=False)
 
-                if rename_result.returncode != 0:
+                if result.returncode != 0:
                     error(f'Unable to rename the certificate bundle { item_title } '
                           f'[ { item_serial } ]', 1)
 
-                return rename_result.returncode == 0
+                return result.returncode == 0
 
             return True
 
