@@ -20,16 +20,17 @@ import sys
 from datetime import datetime, timedelta, timezone
 from cryptography import x509
 from cryptography.x509 import UniformResourceIdentifier
+from cryptography.x509.extensions import ExtensionNotFound
 from cryptography.x509.oid import AuthorityInformationAccessOID, ExtensionOID, NameOID
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import dh, rsa, padding
+from cryptography.hazmat.primitives.asymmetric import dh, dsa, ec, rsa, padding
 from cryptography.hazmat.primitives.serialization import Encoding, load_pem_parameters
 from cryptography.exceptions import InvalidSignature
 
 
 # Constants
-OPCA_VERSION        = '0.15.2'
+OPCA_VERSION        = '0.16.0'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -149,7 +150,7 @@ def format_datetime(date, output_format='openssl'):
     Args:
         date (datetime): The datetime object we are working with
         output_format (string, optional): The output format (openssl)
-    
+
     Returns:
         str
 
@@ -160,6 +161,8 @@ def format_datetime(date, output_format='openssl'):
         format_string = '%Y%m%d%H%M%SZ'
     elif output_format == 'text':
         format_string = '%b %d %H:%M:%S %Y UTC'
+    elif output_format == 'compact':
+        format_string = '%H:%M %d %b %Y'
     else:
         error('Invalid date format', 1)
 
@@ -171,7 +174,7 @@ def generate_dh_params(key_size=DEFAULT_KEY_SIZE['dh']):
 
     Args:
         key_size (int): Target DH Key size
-    
+
     Returns:
         str
 
@@ -193,7 +196,7 @@ def generate_ta_key(key_size=DEFAULT_KEY_SIZE['ta']):
 
     Args:
         key_size (int): Target DH Key size
-    
+
     Returns:
         str
 
@@ -362,9 +365,9 @@ def handle_cert_action(cert_action, cli_args):
     title('x509 Certificate', extra=cert_action, level=2)
 
     one_password = Op(binary=OP_BIN, account=cli_args.account, vault=cli_args.vault)
+    cert_authority = prepare_cert_authority(one_password)
 
     if cert_action == 'create':
-        cert_authority = prepare_cert_authority(one_password)
         certs_to_create = []
 
         if one_password.item_exists(cli_args.cn):
@@ -416,7 +419,6 @@ def handle_cert_action(cert_action, cli_args):
             print_result(new_certificate_bundle.is_valid())
 
     elif cert_action == 'import':
-        cert_authority = prepare_cert_authority(one_password)
         object_config = {
             'type': 'imported'
         }
@@ -470,11 +472,60 @@ def handle_cert_action(cert_action, cli_args):
         else:
             error('Certificate is not signed by this Certificate Authority', 1)
 
-    elif cert_action == 'renew-cert':
-        title('This is a work-in-progress.', 8)
+    elif cert_action == 'info':
+        if cli_args.cn:
+            cert_cn = cli_args.cn
+            cert_serial = cert_authority.get_cert_serial_from_cn(cli_args.cn)
+
+        elif cli_args.serial:
+            cert_cn = cert_authority.get_cert_cn_from_serial(cli_args.serial)
+            cert_serial = cli_args.serial
+
+        else:
+            error(f'Subcommand has not been written:  { cli_args }', 1)
+
+        print(f'CA Database Entry: [ {COLOUR_BRIGHT}{cert_serial}{COLOUR_RESET} ] {cert_cn}')
+
+        cert_bundle = cert_authority.retrieve_certbundle(cert_cn)
+
+        certificate = cert_bundle.get_certificate()
+        cert_type = cert_bundle.get_type()
+        cert_issuer = cert_bundle.get_certificate_attrib('issuer')
+        cert_subject = cert_bundle.get_certificate_attrib('subject')
+        cert_subject_alt_name = cert_bundle.get_certificate_attrib('subject_alt_name')
+        cert_expiry_date = cert_bundle.get_certificate_attrib('not_after')
+        key_size = cert_bundle.get_public_key_size()
+        key_type = cert_bundle.get_public_key_type()
+
+        if cert_bundle.is_valid():
+            cert_status = f'[ {COLOUR_OK}Valid{COLOUR_RESET} ]'
+
+        print(f'Certificate Type: {cert_type} [ {COLOUR_OK}{key_type} {key_size}-bit key{COLOUR_RESET} ]')
+        print(f'Subject: {cert_subject}')
+        print(f'Issuer: {cert_issuer}')
+        print(f'Status: {cert_status}')
+        print(f'Expiry Date: {cert_expiry_date}')
+        print(f'SAN: {cert_subject_alt_name}')
+        print(certificate)
+
+    elif cert_action == 'renew':
+        certs_to_renew = []
+
+        if cli_args.cn:
+            certs_to_renew.append({'title': cli_args.cn})
+
+        elif cli_args.serial:
+            certs_to_renew.append({'serial': cli_args.serial})
+
+        else:
+            error(f'Subcommand has not been written:  { cli_args }', 1)
+
+        for cert_info in certs_to_renew:
+            title(f'Renewing the certificate [ { COLOUR_BRIGHT }{ cert_info['title'] }{ COLOUR_RESET } ]:', 6)
+
+            print_result(success=cert_authority.renew_certificate_bundle(cert_info=cert_info))
 
     elif cert_action == 'revoke':
-        cert_authority = prepare_cert_authority(one_password)
         certs_to_revoke = []
 
         if cli_args.serial:
@@ -608,11 +659,88 @@ def handle_database_action(db_action, cli_args):
     title('CA Database', extra=db_action, level=2)
 
     one_password = Op(binary=OP_BIN, account=cli_args.account, vault=cli_args.vault)
+    certs_to_list = []
 
     if db_action == 'export':
         cert_authority = prepare_cert_authority(one_password)
 
         print(cert_authority.ca_database.export_database().decode('utf-8'))
+
+    elif db_action == 'list':
+        cert_authority = prepare_cert_authority(one_password)
+
+        if cert_authority.ca_database.process_ca_database():
+            warning('The CA database was changed in memory, but not saved. Maybe you should generate a CRL more often?')
+
+        if cli_args.all:
+            certs_to_list = sorted(
+                cert_authority.ca_database.certs_expired |
+                cert_authority.ca_database.certs_revoked |
+                cert_authority.ca_database.certs_expires_soon |
+                cert_authority.ca_database.certs_valid,
+                key=int
+            )
+
+        elif cli_args.expired:
+            certs_to_list = sorted(cert_authority.ca_database.certs_expired, key=int)
+
+        elif cli_args.revoked:
+            certs_to_list = sorted(cert_authority.ca_database.certs_revoked, key=int)
+
+        elif cli_args.expiring:
+            certs_to_list = sorted(cert_authority.ca_database.certs_expires_soon, key=int)
+
+        elif cli_args.valid:
+            certs_to_list = sorted(cert_authority.ca_database.certs_valid, key=int)
+
+        elif cli_args.cn:
+            certs_to_list = [cert_authority.get_cert_serial_from_cn(cli_args.cn)]
+
+        elif cli_args.serial:
+            certs_to_list = [cli_args.serial]
+
+        else:
+            error('This feature is not yet written', 99)
+
+        headers = ["serial", "cn", "title", "status", "expiry_date", "revocation_date"]
+        row_format = "{:<8} {:<30} {:<30} {:<10} {:<20} {:<20}"
+
+        print(row_format.format(*headers))
+        print("-" * 140)
+
+        for line, cert_serial in enumerate(certs_to_list):
+            cert = cert_authority.ca_database.query_cert(cert_info={'serial': cert_serial})
+
+            cn = cert['cn'][:32] + "..." if len(cert['cn']) > 35 else cert['cn']
+
+            expiry_str = format_datetime(
+                date=datetime.strptime(cert['expiry_date'], "%Y%m%d%H%M%SZ"),
+                output_format='compact'
+            )
+
+            if cert.get('revocation_date'):
+                revocation_str = format_datetime(
+                    date=datetime.strptime(cert['revocation_date'], "%Y%m%d%H%M%SZ"),
+                    output_format='compact'
+                )
+            else:
+                revocation_str = ''
+
+            status_colours = {
+                'Valid':   [COLOUR['green'], COLOUR['bold_green']],
+                'Revoked': [COLOUR['red'], COLOUR['bold_red']],
+                'Expired': [COLOUR['yellow'], COLOUR['bold_yellow']],
+            }
+
+            colours = status_colours.get(cert['status'], [COLOUR['white'], COLOUR['bold_white']])
+            colour = colours[line % 2]
+
+            print(colour + row_format.format(cert['serial'],
+                                    cn,
+                                    cert['title'],
+                                    cert['status'],
+                                    expiry_str,
+                                    revocation_str) + COLOUR_RESET)
 
     elif db_action == 'get-config':
         cert_authority = prepare_cert_authority(one_password)
@@ -960,7 +1088,7 @@ def print_result(success, ok_msg='  OK  ', failed_msg='FAILED'):
         success (bool): Success test condition
         ok_msg (str): OK message text
         failed_msg (str): Failed message text
-    
+
     Returns:
         success (bool): A passthrough of the success
 
@@ -1150,14 +1278,23 @@ def setup_cert_subparser(subparsers):
     subparser_action_import_cert.add_argument('-n', '--cn', required=False,
         help='x509 CN attribute for the 1Password Certificate Authority')
 
+    subparser_action_info_cert = parser_cert_actions.add_parser('info',
+        help='Show information of a x509 CertificateBundle object')
+    subparser_group_info_cert = subparser_action_info_cert.add_mutually_exclusive_group(
+        required=True)
+    subparser_group_info_cert.add_argument('-n', '--cn',
+        help='x509 CN attribute of the certificate to show')
+    subparser_group_info_cert.add_argument('-s', '--serial', type=int,
+        help='Serial number of the certificate to show')
+
     subparser_action_renew_cert = parser_cert_actions.add_parser('renew',
         help='Renew a x509 certificate, retaining the private key')
     subparser_group_renew_cert = subparser_action_renew_cert.add_mutually_exclusive_group(
         required=True)
     subparser_group_renew_cert.add_argument('-n', '--cn',
-        help='x509 CN of the certificate to revoke')
+        help='x509 CN of the certificate to renew')
     subparser_group_renew_cert.add_argument('-s', '--serial', type=int,
-        help='Serial number of the certificate to revoke')
+        help='Serial number of the certificate to renew')
 
     subparser_action_revoke_cert = parser_cert_actions.add_parser('revoke',
         help='Create a new x509 CertificateBundle object')
@@ -1216,6 +1353,25 @@ def setup_database_subparser(subparsers):
 
     parser_db_actions.add_parser('get-config',
         help='Get the current CA Database configuration')
+
+    subparser_action_list_db = parser_db_actions.add_parser('list',
+        help='List the certificates in the CA database.')
+    subparser_group_create_cert = subparser_action_list_db.add_mutually_exclusive_group(
+        required=True)
+    subparser_group_create_cert.add_argument('-a', '--all', action='store_true',
+        help='List all certificates')
+    subparser_group_create_cert.add_argument('-e', '--expired', action='store_true',
+        help='List all expired certificates')
+    subparser_group_create_cert.add_argument('-r', '--revoked', action='store_true',
+        help='List all revoked certificates')
+    subparser_group_create_cert.add_argument('-x', '--expiring', action='store_true',
+        help='List certificates expiring soon')
+    subparser_group_create_cert.add_argument('-v', '--valid', action='store_true',
+        help='List all valid certificates')
+    subparser_group_create_cert.add_argument('-n', '--cn',
+        help='List certificate with this cn')
+    subparser_group_create_cert.add_argument('-s', '--serial',
+        help='List certificate with this serial number')
 
     subparser_action_rebuild_db = parser_db_actions.add_parser('rebuild',
         help='Generate a Certificate Database for the 1Password CA')
@@ -1294,7 +1450,7 @@ def title(text, level=1, extra=None):
     Args:
         text (str): The text to be displayed
         level (int):  The level of heading (optional)
-    
+
     Returns:
         None
 
@@ -1333,6 +1489,9 @@ def title(text, level=1, extra=None):
 
         print(f'{title_colour}{text}{reset}\n')
 
+    elif level == 6:
+        print(f'{text}\n')
+
     elif level == 7:
         print(f'{text}')
 
@@ -1351,7 +1510,7 @@ def verify_dh_params(dh_params_pem):
 
     Args:
         dh_params_pem (str): The Diffie-Hellman parameters
-    
+
     Returns:
         int: Diffie-Hellman key size
 
@@ -1369,7 +1528,7 @@ def verify_ta_key(ta_key_pem):
 
     Args:
         ta_key_pem (str): The TLS Authentication Key
-    
+
     Returns:
         int: TLS Authentication key size
 
@@ -1485,7 +1644,7 @@ class CertificateAuthority:
 
         Args:
             item_title (str): The 1Password object that contains a certificate bundle
-            archive (bool): Archive the item in 1Password
+            archive (bool): Archive the item in 1Password. Defaults to True
 
         Returns:
             bool: True if the update succeeded, False otherwise.
@@ -1540,7 +1699,7 @@ class CertificateAuthority:
 
         Args:
             None
-        
+
         Returns:
             str
 
@@ -1549,13 +1708,61 @@ class CertificateAuthority:
         """
         return self.ca_certbundle.get_certificate()
 
+    def get_cert_cn_from_serial(self, serial):
+        """
+        Searches for a certificate by serial number and returns the certificate name
+
+        Args:
+            cert_serial (int)
+
+        Returns:
+            cert_cn (str)
+
+        Raises:
+            None
+        """
+
+        cert_info = {'serial': serial}
+
+        cert = self.ca_database.query_cert(cert_info=cert_info, valid_only=True)
+
+        if not cert:
+            error(f'Certificate with { cert_info } not found. Aborting', 0)
+            return False
+
+        return cert['cn']
+
+    def get_cert_serial_from_cn(self, cn):
+        """
+        Searches for a certificate by certificate name and returns the serial number
+
+        Args:
+            cert_cn (str)
+
+        Returns:
+            cert_serial (int)
+
+        Raises:
+            None
+        """
+
+        cert_info = {'cn': cn}
+
+        cert = self.ca_database.query_cert(cert_info=cert_info, valid_only=True)
+
+        if not cert:
+            error(f'Certificate with { cert_info } not found. Aborting', 0)
+            return False
+
+        return cert['serial']
+
     def get_crl(self):
         """
         Returns the Certificate Signing Request stored in 1Password in PEM format
 
         Args:
             None
-        
+
         Returns:
             str
 
@@ -1881,24 +2088,80 @@ class CertificateAuthority:
         db_item = self.ca_database.query_cert(cert_info={'title': src_item_title},
                                               valid_only=False)
 
-        get_result = self.one_password.get_item(src_item_title)
-
-        if get_result.returncode != 0:
-            error(f'Unable to get the item { src_item_title }', 1)
-
-        store_result = self.one_password.store_item(item_title=dst_item_title,
-                                                    category=None,
-                                                    str_in=get_result.stdout)
-
-        if store_result.returncode != 0:
-            error(f'Unable to store the item as { dst_item_title }', 1)
-
         db_item['title'] = dst_item_title
 
+        result = self.one_password.rename_item(src_item_title=src_item_title,
+                                               dst_item_title=dst_item_title)
+
+        if result.returncode != 0:
+            error(f'Unable to rename the item {src_item_title} to {dst_item_title}', 1)
+            return False
+
         if self.ca_database.update_cert(db_item) and self.store_ca_database().returncode == 0:
-            return self.one_password.delete_item(src_item_title, archive=False)
+            return True
 
         return False
+
+    def renew_certificate_bundle(self, cert_info):
+        """
+        Renew a previously signed certificate from the stored CSR
+
+        Args:
+            cert_info (dict): key - The certificate attribute (cn or serial)
+                            value - The attribute data
+
+        Returns:
+            bool
+
+        Raises:
+            None
+        """
+
+        cert = self.ca_database.query_cert(cert_info=cert_info, valid_only=True)
+
+        if not cert:
+            error(f'Certificate with { cert_info } not found. Aborting', 0)
+            return False
+
+        item_serial = cert['serial']
+        item_title = cert['title']
+
+        if item_title == item_serial:
+            error(f'You cannot renew a certificate that has already been acted on', 1)
+
+        cert_bundle = self.retrieve_certbundle(item_title=item_title)
+
+        pem_csr = cert_bundle.get_csr().encode('utf-8')
+        cert_type = cert_bundle.get_type()
+
+        csr = x509.load_pem_x509_csr(pem_csr, default_backend())
+
+        signed_cert = self.sign_certificate(csr=csr, target=cert_type)
+
+        if cert_bundle.update_certificate(signed_cert):
+            print_result(success=True)
+
+        print(cert_bundle.get_certificate())
+
+        if item_title != str(item_serial):
+            if self.rename_certbundle(src_item_title=item_title,
+                                    dst_item_title=str(item_serial)):
+                pass
+            else:
+                error(f'Unable to rename the certificate bundle', 1)
+        else:
+            error(f'Item title and serial are the same. This should never happen.', 1)
+
+        if self.store_certbundle(certbundle=cert_bundle).returncode == 0:
+            if self.store_ca_database().returncode == 0:
+                pass
+            else:
+                error(f'Unable to store the CA Database', 1)
+
+        else:
+            error(f'Unable to store the new certificate bundle', 1)
+
+        return True
 
     def retrieve_certbundle(self, item_title):
         """
@@ -1972,13 +2235,14 @@ class CertificateAuthority:
             self.store_ca_database()
 
             if item_title != str(item_serial):
-                result = self.delete_certbundle(item_title=item_title, archive=False)
+                result = self.rename_certbundle(src_item_title=item_title,
+                                                dst_item_title=str(item_serial))
 
-                if result.returncode != 0:
+                if not result:
                     error(f'Unable to rename the certificate bundle { item_title } '
                           f'[ { item_serial } ]', 1)
 
-                return result.returncode == 0
+                return result
 
             return True
 
@@ -1991,7 +2255,7 @@ class CertificateAuthority:
         Args:
             csr (cryptography x509.CertificateSigningRequest): Certificate Signing Request
             target (): The type of x509 certificate to create
-        
+
         Returns:
             cryptography.hazmat.bindings._rust.x509.Certificate
 
@@ -2181,7 +2445,7 @@ class CertificateAuthority:
         if not certbundle.is_valid():
             error('Certificate Bundle is not valid', 1)
 
-        if self.ca_database.query_cert(cert_info={'cn': item_title},
+        if self.ca_database.query_cert(cert_info={'title': item_title},
                                         valid_only=True) is not None:
             error('Certificate with a duplicate name exists', 0)
             # TODO: If we get here, the status on create is OK but shows an error
@@ -2244,6 +2508,7 @@ class CertificateAuthorityDB:
         Returns:
             None
         """
+        self.certs_expired = set()
         self.certs_expires_soon = set()
         self.certs_revoked = set()
         self.certs_valid = set()
@@ -2532,9 +2797,10 @@ class CertificateAuthorityDB:
         Process the CA database.
          - The status of certifiates might change due to time
          - Gather a list of
-           - Certificates revoked
+           - Expired Certificates
+           - Revoked Certificates
            - Certificates expiring soon
-           - Certificates valid
+           - Valid Certificates
 
         Args:
             revoke_serial (int, optional): Serial number of the certificate to revoke.
@@ -2546,6 +2812,7 @@ class CertificateAuthorityDB:
             None
         """
         db_changed = False
+        self.certs_expired = set()
         self.certs_expires_soon = set()
         self.certs_revoked = set()
         self.certs_valid = set()
@@ -2580,6 +2847,9 @@ class CertificateAuthorityDB:
                     cert_changed = True
                     db_changed = True
                     cert['status'] = 'Expired'
+
+                self.certs_expired.add(cert['serial'])
+
             elif revoked:
                 if cert['status'] != 'Revoked':
                     cert_changed = True
@@ -2783,7 +3053,7 @@ class CertificateBundle:
 
         Args:
             None
-        
+
         Returns:
             str
 
@@ -2799,7 +3069,7 @@ class CertificateBundle:
 
         Args:
             attrib (str): The attribute to return
-        
+
         Returns:
             str
 
@@ -2811,13 +3081,21 @@ class CertificateBundle:
             attribute = self.certificate.subject.get_attributes_for_oid(oid)
             return attribute[0].value if attribute else None
 
+        def get_subject_alt_name():
+            try:
+                return self.certificate.extensions.get_extension_for_oid(
+                    ExtensionOID.SUBJECT_ALTERNATIVE_NAME
+                ).value
+            except ExtensionNotFound:
+                return None
+
         attrib_map = {
             'cn': lambda: get_attribute_for_oid(NameOID.COMMON_NAME),
             'not_before': lambda: format_datetime(self.certificate.not_valid_before_utc,
                                                   output_format='text'),
             'not_after': lambda: format_datetime(self.certificate.not_valid_after_utc,
                                                   output_format='text'),
-            'issuer': self.certificate.issuer,
+            'issuer': self.certificate.issuer.rfc4514_string(),
             'subject': self.certificate.subject.rfc4514_string(),
             'serial': self.certificate.serial_number,
             'version': self.certificate.version,
@@ -2828,7 +3106,8 @@ class CertificateBundle:
             'state': lambda: get_attribute_for_oid(NameOID.STATE_OR_PROVINCE_NAME),
             'country': lambda: get_attribute_for_oid(NameOID.COUNTRY_NAME),
             'basic_constraints': lambda: self.certificate.extensions.
-                    get_extension_for_oid(ExtensionOID.BASIC_CONSTRAINTS)
+                    get_extension_for_oid(ExtensionOID.BASIC_CONSTRAINTS),
+            'subject_alt_name': lambda: get_subject_alt_name()
         }
 
         func = attrib_map.get(attrib)
@@ -2841,7 +3120,7 @@ class CertificateBundle:
 
         Args:
             attr (str): The attribute to return
-        
+
         Returns:
             str or dict
 
@@ -2864,7 +3143,7 @@ class CertificateBundle:
 
         Args:
             None
-        
+
         Returns:
             str
 
@@ -2884,7 +3163,7 @@ class CertificateBundle:
 
         Args:
             None
-        
+
         Returns:
             str
 
@@ -2899,13 +3178,72 @@ class CertificateBundle:
 
         return ""
 
+    def get_public_key(self):
+        """
+        Returns the public key
+
+        Args:
+            None
+
+        Returns:
+            cryptography.hazmat.bindings._rust.openssl.rsa.RSAPublicKey
+
+        Raises:
+            None
+        """
+
+        return self.certificate.public_key()
+
+    def get_public_key_size(self):
+        """
+        Returns the key length of the private key
+
+        Args:
+            None
+
+        Returns:
+            int
+
+        Raises:
+            None
+        """
+
+        public_key = self.get_public_key()
+
+        return public_key.key_size
+
+    def get_public_key_type(self):
+        """
+        Returns the private key type
+
+        Args:
+            None
+
+        Returns:
+            str
+
+        Raises:
+            None
+        """
+
+        public_key = self.get_public_key()
+
+        if isinstance(public_key, rsa.RSAPublicKey):
+            return "RSA"
+        elif isinstance(public_key, ec.EllipticCurvePublicKey):
+            return "EC"
+        elif isinstance(public_key, dsa.DSAPublicKey):
+            return "DSA"
+        else:
+            return "Unknown"
+
     def get_title(self):
         """
         Returns the title of the certificate bundle
 
         Args:
             None
-        
+
         Returns:
             str
 
@@ -2920,7 +3258,7 @@ class CertificateBundle:
 
         Args:
             None
-        
+
         Returns:
             str
 
@@ -2936,7 +3274,7 @@ class CertificateBundle:
         Args:
             cert_cn (str): The CN to use for the CSR
             private_key (str):  The private key to use in creating a CSR
-        
+
         Returns:
             cryptography.hazmat.bindings._rust.x509.CertificateSigningRequest
 
@@ -2990,7 +3328,7 @@ class CertificateBundle:
 
         Args:
             None
-        
+
         Returns:
             cryptography.hazmat.backends.openssl.rsa._RSAPrivateKey
 
@@ -3014,7 +3352,7 @@ class CertificateBundle:
 
         Args:
             certificate (str): PEM encoded x509 certificate
-        
+
         Returns:
             None
 
@@ -3029,7 +3367,7 @@ class CertificateBundle:
 
         Args:
             private_key (str): PEM encoded RSA private key
-        
+
         Returns:
             None
 
@@ -3044,7 +3382,7 @@ class CertificateBundle:
 
         Args:
             None
-        
+
         Returns:
             bool
 
@@ -3059,7 +3397,7 @@ class CertificateBundle:
 
         Args:
             None
-        
+
         Returns:
             bool
 
@@ -3095,7 +3433,7 @@ class CertificateBundle:
 
         Args:
             csr (cryptography x509.CertificateSigningRequest): Certificate Signing Request
-        
+
         Returns:
             cryptography.hazmat.bindings._rust.x509.Certificate
 
@@ -3245,9 +3583,9 @@ class CertificateBundle:
 
         Args:
             certificate (cryptography Certificate): x509 certificate
-        
+
         Returns:
-            None
+            bool: Success of updating the certificate bundle certificate
 
         Raises:
             None
@@ -3256,8 +3594,12 @@ class CertificateBundle:
         # Does the private key match the certificate?
         if self.private_key.public_key() == certificate.public_key():
             self.certificate = certificate
+
+            return True
         else:
             error('Signed certificate does not match the private key', 1)
+
+        return False
 
 
 class Op:
@@ -3447,6 +3789,27 @@ class Op:
         """
 
         result = run_command([self.bin, 'read', url])
+
+        return result
+
+    def rename_item(self, src_item_title, dst_item_title):
+        """
+        Rename an item in 1Password
+
+        Args:
+            src_item_title (str): The item to rename
+            dst_item_title (str): The name to item should be renamed to
+
+        Returns:
+            subprocess.CompletedProcess: Output from 1Password CLI > op vault get [ vault ]
+
+        Raises:
+            None
+        """
+
+        cmd = [self.bin, 'item', 'edit', src_item_title, '--title', dst_item_title, '--vault', self.vault]
+
+        result = run_command(cmd)
 
         return result
 

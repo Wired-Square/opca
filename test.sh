@@ -92,7 +92,8 @@ run_test ca init -e "no1@home.com" \
 run_test cert create -t vpnserver -n vpnserver-cert
 run_test cert create -t vpnclient -n vpnclient-cert
 run_test cert create -t webserver -n webserver-cert --alt www.webserver.com
-run_test cert create -t mailserver -n mailserver-cert --alt mail.webserver.com
+run_test cert create -t webserver -n mailserver-cert --alt mail.webserver.com
+run_test cert renew -n mailserver-cert
 run_test cert revoke -n webserver-cert
 run_test cert revoke -s 5
 
@@ -100,10 +101,10 @@ run_test cert revoke -s 5
 run_test openvpn gen-sample-vpn-server
 run_test openvpn gen-dh
 run_test openvpn gen-ta-key
-run_test openvpn gen-vpn-client -t sample -n vpnclient-cert
+run_test openvpn gen-vpn-profile -t sample -n vpnclient-cert
 run_test cert revoke -n vpnclient-cert
 run_test cert create -t vpnclient -n vpnclient-cert
-run_test openvpn gen-vpn-client -t sample -n vpnclient-cert
+run_test openvpn gen-vpn-profile -t sample -n vpnclient-cert
 
 echo "We ran $TEST tests"
 echo "Succeeded: $SUCCEEDED"
