@@ -30,7 +30,7 @@ from cryptography.exceptions import InvalidSignature
 
 
 # Constants
-OPCA_VERSION        = '0.16.1'
+OPCA_VERSION        = '0.16.2'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
