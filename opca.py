@@ -30,21 +30,21 @@ from cryptography.exceptions import InvalidSignature
 
 
 # Constants
-OPCA_VERSION        = '0.16.0'
+OPCA_VERSION        = '0.16.1'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
 OPCA_LICENSE        = 'mit'
 
 COLOUR = {
-'black': '\033[0;30m',
-'red': '\033[0;31m',
-'green': '\033[0;32m',
-'yellow': '\033[0;33m',
-'blue': '\033[0;34m',
-'magenta': '\033[0;35m',
-'cyan': '\033[0;36m',
-'white': '\033[0;37m',
+'black': '\033[30m',
+'red': '\033[31m',
+'green': '\033[32m',
+'yellow': '\033[33m',
+'blue': '\033[34m',
+'magenta': '\033[35m',
+'cyan': '\033[36m',
+'white': '\033[37m',
 'bold_black': '\033[1;30m',
 'bold_red': '\033[1;31m',
 'bold_green': '\033[1;32m',
@@ -61,6 +61,7 @@ COLOUR = {
 'underline_magenta': '\033[4;35m',
 'underline_cyan': '\033[4;36m',
 'underline_white': '\033[4;37m',
+'bright_white': '\033[97m',
 'reset': '\033[0m'
 }
 
@@ -730,9 +731,15 @@ def handle_database_action(db_action, cli_args):
                 'Valid':   [COLOUR['green'], COLOUR['bold_green']],
                 'Revoked': [COLOUR['red'], COLOUR['bold_red']],
                 'Expired': [COLOUR['yellow'], COLOUR['bold_yellow']],
+                'Expiring': [BG_COLOUR['green'] + COLOUR['black'], BG_COLOUR['green'] + COLOUR['bright_white']],
             }
 
-            colours = status_colours.get(cert['status'], [COLOUR['white'], COLOUR['bold_white']])
+            # Change the colour of 'Expiring' certificates
+            if cert['status'] == 'Valid' and cert['serial'] in cert_authority.ca_database.certs_expires_soon:
+                colours = status_colours.get('Expiring', [COLOUR['white'], COLOUR['bold_white']])
+            else:
+                colours = status_colours.get(cert['status'], [COLOUR['white'], COLOUR['bold_white']])
+
             colour = colours[line % 2]
 
             print(colour + row_format.format(cert['serial'],
