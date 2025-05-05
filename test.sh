@@ -97,6 +97,10 @@ run_test cert renew -n mailserver-cert
 run_test cert revoke -n webserver-cert
 run_test cert revoke -s 5
 
+# Certificate Revokation List checks
+run_test crl create
+run_test crl get
+
 # OpenVPN Tests
 run_test openvpn gen-sample-vpn-server
 run_test openvpn gen-dh

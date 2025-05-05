@@ -1992,7 +1992,7 @@ class CertificateAuthority:
 
         # 2. Date Validity
         current_date = datetime.now(timezone.utc)
-        if crl.last_update <= current_date <= crl.next_update:
+        if crl.last_update_utc <= current_date <= crl.next_update_utc:
             return True
 
         return False
