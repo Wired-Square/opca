@@ -30,7 +30,7 @@ from cryptography.exceptions import InvalidSignature
 
 
 # Constants
-OPCA_VERSION        = '0.16.2'
+OPCA_VERSION        = '0.16.3'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -704,7 +704,7 @@ def handle_database_action(db_action, cli_args):
             error('This feature is not yet written', 99)
 
         headers = ["serial", "cn", "title", "status", "expiry_date", "revocation_date"]
-        row_format = "{:<8} {:<30} {:<30} {:<10} {:<20} {:<20}"
+        row_format = "{:<8} {:<35} {:<40} {:<10} {:<20} {:<20}"
 
         print(row_format.format(*headers))
         print("-" * 140)
@@ -712,7 +712,10 @@ def handle_database_action(db_action, cli_args):
         for line, cert_serial in enumerate(certs_to_list):
             cert = cert_authority.ca_database.query_cert(cert_info={'serial': cert_serial})
 
-            cn = cert['cn'][:32] + "..." if len(cert['cn']) > 35 else cert['cn']
+            if len(cert['cn']) > 35:
+                cn = cert['cn'][:32] + "..."
+            else:
+                cn = cert['cn']
 
             expiry_str = format_datetime(
                 date=datetime.strptime(cert['expiry_date'], "%Y%m%d%H%M%SZ"),
@@ -730,18 +733,17 @@ def handle_database_action(db_action, cli_args):
             status_colours = {
                 'Valid':   [COLOUR['green'], COLOUR['bold_green']],
                 'Revoked': [COLOUR['red'], COLOUR['bold_red']],
-                'Expired': [COLOUR['yellow'], COLOUR['bold_yellow']],
-                'Expiring': [BG_COLOUR['green'] + COLOUR['black'], BG_COLOUR['green'] + COLOUR['bright_white']],
+                'Expired': [COLOUR['white'], COLOUR['bright_white']],
+                'Expiring': [COLOUR['yellow'], COLOUR['bold_yellow']],
             }
 
             # Change the colour of 'Expiring' certificates
             if cert['status'] == 'Valid' and cert['serial'] in cert_authority.ca_database.certs_expires_soon:
-                colours = status_colours.get('Expiring', [COLOUR['white'], COLOUR['bold_white']])
+                colours = status_colours.get('Expiring', [COLOUR['magenta'], COLOUR['bold_magenta']])
             else:
                 colours = status_colours.get(cert['status'], [COLOUR['white'], COLOUR['bold_white']])
 
             colour = colours[line % 2]
-
             print(colour + row_format.format(cert['serial'],
                                     cn,
                                     cert['title'],
