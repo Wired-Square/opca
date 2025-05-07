@@ -2456,14 +2456,15 @@ class CertificateAuthority:
 
         if self.ca_database.query_cert(cert_info={'title': item_title},
                                         valid_only=True) is not None:
+            # Certificate 'title' must be unique.
+            # Certificate 'cn' does not need to be unique
             error('Certificate with a duplicate name exists', 0)
-            # TODO: If we get here, the status on create is OK but shows an error
             return False
 
         if self.ca_database.query_cert(cert_info={'serial': item_serial},
                                         valid_only=True) is not None:
+            # Certificate 'serial' must be unique.
             error('Certificate with a duplicate serial number exists', 0)
-            # TODO: If we get here, the status on create is OK but shows an error
             return False
 
         attributes = [f'{self.op_config["cert_type_item"]}=' + \
