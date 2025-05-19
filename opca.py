@@ -30,7 +30,7 @@ from cryptography.exceptions import InvalidSignature
 
 
 # Constants
-OPCA_VERSION        = '0.16.3'
+OPCA_VERSION        = '0.16.4'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -371,6 +371,7 @@ def handle_cert_action(cert_action, cli_args):
     if cert_action == 'create':
         certs_to_create = []
 
+        # TODO: This test should happen for each cert. If a file is provided, then this is bypassed
         if one_password.item_exists(cli_args.cn):
             error(f'CN {cli_args.cn} already exists. Aborting', 1)
 
@@ -852,34 +853,77 @@ def handle_openvpn_action(openvpn_action, cli_args):
         print(ta_key_pem)
 
     elif openvpn_action == 'gen-vpn-profile':
-        env_vars = os.environ.copy()
-        env_vars['OPCA_USER'] = cli_args.cn
+        profiles_to_generate = []
+        ovpn_templates = {}
+ 
+        if cli_args.cn:
+            profile_config = {
+                'template': cli_args.template,
+                'cn': cli_args.cn
+            }
 
-        title('Reading VPN profile ' + \
-            f'[ {COLOUR_BRIGHT}{cli_args.template}{COLOUR_RESET} ] from 1Password', 9)
+            profiles_to_generate.append(profile_config)
+        elif cli_args.file:
+            for line in read_file(file_path=cli_args.file, file_mode='r').split('\n'):
+                line = line.strip()
 
-        result = one_password.read_item(url = one_password.mk_url(
-                            item_title=DEFAULT_OP_CONF["openvpn_title"],
-                            value_key=f'template/{cli_args.template}'))
+                if not line:
+                    continue
 
-        print_result(result.returncode == 0)
+                if line.startswith('#'):
+                    continue
 
-        if result.returncode == 0:
-            ovpn_template = result.stdout
+                profile_config = {
+                    'template': cli_args.template,
+                    'cn': line
+                }
+
+                profiles_to_generate.append(profile_config)
         else:
-            error(result.stderr, result.returncode)
+            error(f'Subcommand has not been written:  { cli_args }', 1)
 
-        title(f'Generating VPN profile for [ {COLOUR_BRIGHT}{cli_args.cn}{COLOUR_RESET} ]', 9)
-        result = one_password.inject_item(env_vars=env_vars, template=ovpn_template)
-        print_result(result.returncode == 0)
+        for profile in profiles_to_generate:
+            profile_template = profile.get('template')
+            profile_cn = profile.get('cn')
 
-        if result.returncode != 0:
-            error(result.stderr, result.returncode)
+            env_vars = os.environ.copy()
+            env_vars['OPCA_USER'] = profile_cn
 
-        title('Storing VPN profile in 1Password', 9)
-        one_password.store_document(op_action='create', item_title=f'VPN_{cli_args.cn}',
-                        filename=f'{cli_args.cn}-{cli_args.template}.ovpn', str_in=result.stdout)
-        print_result(result.returncode == 0)
+            if profile_template not in ovpn_templates:
+                title('Reading VPN profile ' + \
+                    f'[ {COLOUR_BRIGHT}{profile_template}{COLOUR_RESET} ] from 1Password', 9)
+
+                result = one_password.read_item(url = one_password.mk_url(
+                                    item_title=DEFAULT_OP_CONF["openvpn_title"],
+                                    value_key=f'template/{profile_template}'))
+
+                print_result(result.returncode == 0)
+
+                if result.returncode == 0:
+                    ovpn_templates[profile_template] = result.stdout
+                else:
+                    error(result.stderr, result.returncode)
+
+            title(f'Generating VPN profile for [ {COLOUR_BRIGHT}{profile_cn}{COLOUR_RESET} ] with template [ {COLOUR_BRIGHT}{profile_template}{COLOUR_RESET} ]', 9)
+            result = one_password.inject_item(env_vars=env_vars, template=ovpn_templates[profile_template])
+            print_result(result.returncode == 0)
+
+            if result.returncode != 0:
+                error(result.stderr, result.returncode)
+
+            if cli_args.dest:
+                title(f'Storing VPN profile in 1Password vault [ {COLOUR_BRIGHT}{cli_args.dest}{COLOUR_RESET} ]', 9)
+                result = one_password.store_document(op_action='create', item_title=f'VPN_{profile_cn}',
+                            filename=f'{profile_cn}-{profile_template}.ovpn', str_in=result.stdout, vault=cli_args.dest)
+            else:
+                title('Storing VPN profile in 1Password', 9)
+                result = one_password.store_document(op_action='create', item_title=f'VPN_{profile_cn}',
+                            filename=f'{profile_cn}-{profile_template}.ovpn', str_in=result.stdout)
+
+            print_result(result.returncode == 0)
+
+            if result.returncode != 0:
+                error(result.stderr, result.returncode)
 
     elif openvpn_action == 'get-dh':
         title('Reading the DH parameters from 1Password', 9)
@@ -1443,7 +1487,12 @@ def setup_openvpn_subparser(subparsers):
         help='Generate VPN profile from template')
     subparser_action_gen_vpn_profile.add_argument('-d', '--dest', required=False,
         help='The destination vault to store the VPN profile')
-    subparser_action_gen_vpn_profile.add_argument('-n', '--cn', required=True,
+
+    subparser_group_gen_vpn_profile = subparser_action_gen_vpn_profile.add_mutually_exclusive_group(
+        required=True)
+    subparser_group_gen_vpn_profile.add_argument('-f', '--file',
+        help='Bulk certificate CN file')
+    subparser_group_gen_vpn_profile.add_argument('-n', '--cn',
         help='The certificate CN. This is also the 1Password title')
     subparser_action_gen_vpn_profile.add_argument('-t', '--template', required=True,
         help='OpenVPN template stored in 1Password')
@@ -3845,7 +3894,7 @@ class Op:
 
         return url
 
-    def store_document(self, item_title, filename, str_in, op_action='create'):
+    def store_document(self, item_title, filename, str_in, op_action='create', vault=None):
         """
         Store a document in 1Password
 
@@ -3854,6 +3903,7 @@ class Op:
             filename (str): The filename to store as metadata in 1Password
             str_in (str): The contents of a file to store as a document
             op_action (str): CRUD action
+            vault (str): The destination vault for 'create' items
 
         Returns:
             subprocess.CompletedProcess: Output from 1Password CLI
@@ -3861,6 +3911,9 @@ class Op:
         Raises:
             None
         """
+
+        if vault == None:
+            vault = self.vault
 
         if op_action not in ['auto', 'create', 'edit']:
             error(f'Unknown storage command {op_action}', 1)
@@ -3875,7 +3928,7 @@ class Op:
             item_title = f'--title={item_title}'
 
         cmd = [self.bin, 'document', op_action, item_title,
-                f'--vault={self.vault}', f'--file-name={filename}']
+                f'--vault={vault}', f'--file-name={filename}']
 
         result = run_command(cmd, str_in=str_in)
 
