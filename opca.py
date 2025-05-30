@@ -17,20 +17,23 @@ import secrets
 import sqlite3
 import subprocess
 import sys
+import tempfile
+from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from cryptography import x509
 from cryptography.x509 import UniformResourceIdentifier
-from cryptography.x509.extensions import ExtensionNotFound
+from cryptography.x509.extensions import ExtensionOID, ExtensionNotFound
 from cryptography.x509.oid import AuthorityInformationAccessOID, ExtensionOID, NameOID
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import dh, dsa, ec, rsa, padding
 from cryptography.hazmat.primitives.serialization import Encoding, load_pem_parameters
 from cryptography.exceptions import InvalidSignature
+from urllib.parse import urlparse
 
 
 # Constants
-OPCA_VERSION        = '0.16.4'
+OPCA_VERSION        = '0.17.0'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -115,6 +118,11 @@ DEFAULT_OP_CONF = {
     'dh_key_size_item': 'diffie-hellman.key_size[text]',
     'ta_item': 'tls_authentication.static_key',
     'ta_key_size_item': 'tls_authentication.key_size[text]'
+}
+
+DEFAULT_STORAGE_CONF = {
+    'ca_cert_file': 'ca.crt',
+    'crl_file': 'crl.pem'
 }
 
 OP_BIN = 'op'
@@ -345,6 +353,18 @@ def handle_ca_action(ca_action, cli_args):
             error(result.stderr, 1)
 
         print(result.stdout)
+
+    elif ca_action == 'upload':
+        cert_authority = prepare_cert_authority(one_password)
+
+        if cli_args.store is None:
+            title(f'Uploading CA Certificate to [ { COLOUR_BRIGHT }Public Store{ COLOUR_RESET } ]', 9)
+            print_result(cert_authority.upload_ca_cert())
+
+        else:
+            for store_uri in cli_args.store:
+                title(f'Uploading CA Certificate to [ { COLOUR_BRIGHT }{store_uri}{ COLOUR_RESET } ]', 9)
+                print_result(cert_authority.upload_ca_cert(store_uri))
 
     else:
         error('This feature is not yet written', 99)
@@ -628,6 +648,27 @@ def handle_crl_action(crl_action, cli_args):
 
         print(crl)
 
+    elif crl_action == 'info':
+        cert_authority = prepare_cert_authority(one_password)
+
+        crl_info = cert_authority.get_crl_info()
+
+        title(f'Checking { COLOUR_BRIGHT }CRL Validity{ COLOUR_RESET} [ { COLOUR_BRIGHT }{crl_info['crl_number']}{ COLOUR_RESET } ] {crl_info['issuer']}', 9)
+        print_result(crl_info['valid'])
+
+        print(f'Last Update: {crl_info['last_update']}')
+        print(f'Next Update: {crl_info['next_update']}')
+
+        if crl_info['expired']:
+            warning('This CRL is expired. A new one should be issued.')
+
+        if crl_info['revoked']:
+            print(f'{ COLOUR_BRIGHT }Revoked Certificates:{ COLOUR_RESET}')
+            for cert in crl_info['revoked']:
+                print(f'  Serial: {cert.serial_number}, Revocation Date: {cert.revocation_date_utc}')
+        else:
+            print(f'{ COLOUR_BRIGHT }No Revoked Certificates:{ COLOUR_RESET}')
+
     elif crl_action == 'import':
         cert_authority = prepare_cert_authority(one_password)
 
@@ -639,6 +680,26 @@ def handle_crl_action(crl_action, cli_args):
         print_result(cert_authority.import_crl(imported_crl))
 
         print("import da file")
+
+    elif crl_action == 'upload':
+        cert_authority = prepare_cert_authority(one_password)
+
+        if cli_args.generate:
+            crl = cert_authority.generate_crl()
+        else:
+            crl = cert_authority.get_crl()
+
+        title(f'Checking retrieved [ { COLOUR_BRIGHT }CRL Validity{ COLOUR_RESET } ]', 9)
+        print_result(cert_authority.is_crl_valid(crl.encode('utf-8')))
+
+        if cli_args.store is None:
+            title(f'Uploading CRL to [ { COLOUR_BRIGHT }Public Store{ COLOUR_RESET } ]', 9)
+            print_result(cert_authority.upload_crl())
+
+        else:
+            for store_uri in cli_args.store:
+                title(f'Uploading CRL to [ { COLOUR_BRIGHT }{store_uri}{ COLOUR_RESET } ]', 9)
+                print_result(cert_authority.upload_crl(store_uri))
 
     else:
         error('This feature is not yet written', 99)
@@ -782,6 +843,18 @@ def handle_database_action(db_action, cli_args):
         cert_authority.store_ca_database()
 
         print(cert_authority.ca_database.get_config_attributes())
+
+    elif db_action == 'upload':
+        cert_authority = prepare_cert_authority(one_password)
+
+        if cli_args.store is None:
+            title(f'Uploading CA Database to [ { COLOUR_BRIGHT }Private Store{ COLOUR_RESET } ]', 9)
+            print_result(cert_authority.upload_ca_database())
+
+        else:
+            for store_uri in cli_args.store:
+                title(f'Uploading CA Database to [ { COLOUR_BRIGHT }{store_uri}{ COLOUR_RESET } ]', 9)
+                print_result(cert_authority.upload_ca_database(store_uri))
 
     else:
         error('This feature is not yet written', 99)
@@ -1293,6 +1366,11 @@ def setup_ca_subparser(subparsers):
     subparser_action_get_csr.add_argument('-n', '--cn', required=True,
         help='x509 CN attribute for the 1Password Certificate Authority')
 
+    subparser_action_upload_ca_cert = parser_ca_actions.add_parser('upload',
+        help='Upload the CA Certificate to the public store')
+    subparser_action_upload_ca_cert.add_argument('--store', action='append', required=False,
+        help='Manually set the store location. Example: s3://bucket/key')
+
 def setup_cert_subparser(subparsers):
     """
     Configure the x509 Certificate related subparser.
@@ -1380,10 +1458,20 @@ def setup_crl_subparser(subparsers):
     parser_crl_actions.add_parser('get',
         help='Get the Certificate Revocation List from 1Password')
 
+    parser_crl_actions.add_parser('info',
+        help='Show information about the Certificate Revocation List from 1Password')
+
     subparser_action_import_crl = parser_crl_actions.add_parser('import',
         help='Import a previously generated Certificate Revocation List')
     subparser_action_import_crl.add_argument('-f', '--file', required=True,
         help='PEM formatted CRL file')
+
+    subparser_action_upload_crl = parser_crl_actions.add_parser('upload',
+        help='Upload the CRL Database to the public store')
+    subparser_action_upload_crl.add_argument('--generate', '--gen', action='store_true', required=False,
+        help='Generate the CRL before storing')
+    subparser_action_upload_crl.add_argument('--store', action='append', required=False,
+        help='Manually set the store location. Example: s3://bucket/key')
 
 def setup_database_subparser(subparsers):
     """
@@ -1445,6 +1533,11 @@ def setup_database_subparser(subparsers):
         help='Modify the CA Database configuration')
     subparser_action_set_config.add_argument('--conf', action='append', required=True,
         help='Configuration attributes to modify. Example: --conf city=Canberra --conf days=30')
+
+    subparser_action_set_upload = parser_db_actions.add_parser('upload',
+        help='Upload the CA Database to the private store')
+    subparser_action_set_upload.add_argument('--store', action='append', required=False,
+        help='Manually set the store location. Example: s3://bucket/key')
 
 def setup_openvpn_subparser(subparsers):
     """
@@ -1618,7 +1711,7 @@ def warning(warning_msg):
     error_colour = COLOUR_WARNING
     reset = COLOUR['reset']
 
-    print(f'{error_colour}Warning:{reset} {warning_msg}')
+    print(f'⚠️ {error_colour}Warning:{reset} {warning_msg}')
 
 
 class CertificateAuthority:
@@ -1816,7 +1909,7 @@ class CertificateAuthority:
 
     def get_crl(self):
         """
-        Returns the Certificate Signing Request stored in 1Password in PEM format
+        Returns the Certificate Revocation List stored in 1Password in PEM format
 
         Args:
             None
@@ -1835,6 +1928,57 @@ class CertificateAuthority:
                 self.crl = result.stdout
 
         return self.crl
+
+    def get_crl_info(self):
+        """
+        Returns information about the Certificate Revocation List stored in 1Password in PEM format
+
+        Args:
+            None
+
+        Returns:
+            crl_info (dict)
+
+        Raises:
+            None
+        """
+
+        crl_info = {}
+
+        if self.crl is None:
+            self.get_crl()
+
+        crl_bytes = self.crl.strip().encode('utf-8')
+        crl_x509 = x509.load_pem_x509_crl(crl_bytes, backend=default_backend)
+
+        crl_info['valid'] = self.is_crl_valid(crl_bytes)
+        crl_info['issuer'] = crl_x509.issuer.rfc4514_string()
+        crl_info['last_update'] = crl_x509.last_update_utc
+        crl_info['next_update'] = crl_x509.next_update_utc
+
+        if crl_x509.next_update_utc < datetime.now(timezone.utc):
+            crl_info['expired'] = True
+        else:
+            crl_info['expired'] = False
+
+        try:
+            crl_info['crl_number'] = crl_x509.extensions.get_extension_for_oid(ExtensionOID.CRL_NUMBER).value.crl_number
+        except x509.ExtensionNotFound:
+            crl_info['crl_number'] = None
+
+        crl_info['revoked'] = list(crl_x509)
+
+        return crl_info
+
+    def get_storage_from_uri(self, uri: str) -> "StorageBackend":
+        scheme = urlparse(uri).scheme
+
+        if scheme == 's3':
+            return StorageS3()
+        if scheme == 'rsync':
+            return StorageRsync()
+        else:
+            raise ValueError(f'Unsupported URI scheme: {scheme}')
 
     def generate_crl(self):
         """
@@ -2546,11 +2690,86 @@ class CertificateAuthority:
 
         return result
 
+    def upload_content(self, content: str, store_uri: str):
+        """ Generic content upload wrapper """
+
+        storage = self.get_storage_from_uri(store_uri)
+
+        return storage.upload(content, store_uri)
+
+    def upload_ca_database(self, store_uri: str = ''):
+        """
+        Uploads the CA Database stored in 1Password in PEM format to private store, 
+        or to the store_uri if specified
+
+        Args:
+            store_uri (str): The storage location to upload the CRL
+
+        Returns:
+            bool
+
+        Raises:
+            None
+        """
+
+        if store_uri:
+            ca_db_uri = store_uri
+        else:
+            ca_db_uri = self.ca_database.get_config_attributes()['ca_private_store'] + '/' + self.one_password.vault + '.sqlite'
+
+        binary_db = self.ca_database.export_database_binary()
+
+        return self.upload_content(binary_db, ca_db_uri)
+
+    def upload_ca_cert(self, store_uri: str = ''):
+        """
+        Uploads the CA Certificate stored in 1Password in PEM format to public store, 
+        or to the store_uri if specified
+
+        Args:
+            store_uri (str): The storage location to upload the CRL
+
+        Returns:
+            bool
+
+        Raises:
+            None
+        """
+
+        if store_uri:
+            ca_cert_uri = store_uri
+        else:
+            ca_cert_uri = self.ca_database.get_config_attributes()['ca_public_store'] + '/' + DEFAULT_STORAGE_CONF['ca_cert_file']
+
+        return self.upload_content(self.get_certificate(), ca_cert_uri)
+
+    def upload_crl(self, store_uri: str = ''):
+        """
+        Uploads the Certificate Signing Request stored in 1Password in PEM format to public store, 
+        or to the store_uri if specified
+
+        Args:
+            store_uri (str): The storage location to upload the CRL
+
+        Returns:
+            bool
+
+        Raises:
+            None
+        """
+
+        if store_uri:
+            crl_uri = store_uri
+        else:
+            crl_uri = self.ca_database.get_config_attributes()['ca_public_store'] + '/' + DEFAULT_STORAGE_CONF['crl_file']
+
+        return self.upload_content(self.get_crl(), crl_uri)
+
 
 class CertificateAuthorityDB:
     """ Class to manage a database for the CA in SQLite """
 
-    _default_schema_version = 2
+    _default_schema_version = 3
 
     @property
     def default_schema_version(self):
@@ -2585,7 +2804,10 @@ class CertificateAuthorityDB:
             'crl_url',
             'days',
             'crl_days',
-            'schema_version'
+            'schema_version',
+            'ca_public_store',
+            'ca_private_store',
+            'ca_backup_store'
         )
 
         if data:
@@ -2669,7 +2891,10 @@ class CertificateAuthorityDB:
                 crl_url TEXT,
                 days INTEGER,
                 crl_days INTEGER,
-                schema_version INTEGER
+                schema_version INTEGER,
+                ca_public_store TEXT,
+                ca_private_store TEXT,
+                ca_backup_store TEXT
             )
         ''')
         self.conn.commit()
@@ -2722,6 +2947,18 @@ class CertificateAuthorityDB:
             memory_file.write(line.encode('utf-8'))
 
         return memory_file.getvalue()
+
+    def export_database_binary(self):
+        """Backup the in-memory SQLite database and return it as bytes (binary .sqlite format)."""
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=True) as tmp_file:
+
+            disk_conn = sqlite3.connect(tmp_file.name)
+
+            self.conn.backup(disk_conn)
+            disk_conn.close()
+
+            tmp_file.seek(0)
+            return tmp_file.read()
 
     def get_config_attributes(self, attrs=None):
         """
@@ -2804,6 +3041,22 @@ class CertificateAuthorityDB:
                 try:
                     cursor.execute('ALTER TABLE config ADD COLUMN ou TEXT;')
                     cursor.execute('UPDATE config SET schema_version=2 WHERE id=1;')
+                    self.conn.commit()
+
+                    schema_version = 2
+                    print_result(True)
+
+                except sqlite3.OperationalError:
+                    print_result(False)
+
+            elif schema_version == 2:
+                title('Updating schema to version 3', 9)
+
+                try:
+                    cursor.execute('ALTER TABLE config ADD COLUMN ca_public_store TEXT;')
+                    cursor.execute('ALTER TABLE config ADD COLUMN ca_private_store TEXT;')
+                    cursor.execute('ALTER TABLE config ADD COLUMN ca_backup_store TEXT;')
+                    cursor.execute('UPDATE config SET schema_version=3 WHERE id=1;')
                     self.conn.commit()
 
                     schema_version = 2
@@ -3992,6 +4245,123 @@ class Op:
         """
         result = run_command([self.bin, 'whoami'])
         return result
+
+
+class StorageBackend(ABC):
+    """ An abstract base class for storage """
+    @abstractmethod
+    def upload(self, content: str, uri: str):
+        pass
+
+
+class StorageRsync(StorageBackend):
+    """ A Rsync storage backend """
+    def upload(self, content: str, uri: str) -> bool:
+        """
+        Uploads content to Rsync
+
+        Args:
+            content (str): The content to upload
+            uri (str): The S3 URI in the format s3://bucket/key
+
+        Returns:
+            bool: Upload status
+
+        Raises:
+            None
+        """
+        parsed_uri = urlparse(uri)
+
+        if parsed_uri.scheme != 'rsync':
+            warning(f'Invalid URI scheme: {parsed_uri.scheme}')
+            return False
+
+        destination = f'{parsed_uri.netloc}{parsed_uri.path}'
+
+        try:
+            with tempfile.NamedTemporaryFile('w', delete=False) as tmp_file:
+                tmp_file.write(content)
+
+            result = subprocess.run(
+                ['rsync', '-avz', tmp_file.name, destination],
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode != 0:
+                print(f'Rsync failed:\n{result.stderr}')
+                return False
+
+            return True
+
+        except Exception as e:
+            error(f'Upload failed: {e}')
+            return False
+
+        finally:
+            if tmp_file.name and os.path.exists(tmp_file.name):
+                try:
+                    os.remove(tmp_file.name)
+                except Exception as cleanup_error:
+                    warning(f'Failed to delete temp file: {cleanup_error}')
+
+
+class StorageS3(StorageBackend):
+    """ A S3 storage backend """
+    def __init__(self):
+        try:
+            import boto3
+        except:
+            error('boto3 not installed. S3 Uploads will be disabled.')
+
+        command = ["op", "plugin", "run", "--", "aws", "configure", "export-credentials", "--format", "env"]
+        result = subprocess.run(command, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if line.startswith("export "):
+                    var, value = line[len("export "):].split("=", 1)
+                    os.environ[var] = value
+
+            self.s3 = boto3.client('s3')
+        else:
+            error(f'Error: {result.stderr}')
+            self.s3 = None
+
+
+    def upload(self, content: str, uri: str) -> bool:
+        """
+        Uploads content to S3
+
+        Args:
+            content (str): The content to upload
+            uri (str): The S3 URI in the format s3://bucket/key
+
+        Returns:
+            bool: Upload status
+
+        Raises:
+            None
+        """
+        if not self.s3:
+            error('S3 client not available. Skipping upload.')
+            return False
+
+        parsed_uri = urlparse(uri)
+
+        if parsed_uri.scheme != 's3':
+            warning(f'Invalid URI scheme: {parsed_uri.scheme}')
+            return False
+
+        bucket = parsed_uri.netloc
+        key = parsed_uri.path.lstrip('/')
+
+        try:
+            self.s3.put_object(Bucket=bucket, Key=key, Body=content)
+            return True
+        except Exception as e:
+            error(f'Upload failed: {e}')
+            return False
 
 
 if __name__ == "__main__":
