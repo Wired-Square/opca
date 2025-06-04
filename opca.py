@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 
 
 # Constants
-OPCA_VERSION        = '0.17.0'
+OPCA_VERSION        = '0.17.1'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -2000,10 +2000,7 @@ class CertificateAuthority:
 
         builder = x509.CertificateRevocationListBuilder()
 
-        builder = builder.issuer_name(x509.Name([
-            x509.NameAttribute(x509.NameOID.COMMON_NAME,
-                                self.ca_certbundle.get_certificate_attrib('cn')),
-        ]))
+        builder = builder.issuer_name(self.ca_certbundle.certificate.subject)
 
         builder = builder.last_update(datetime.now(timezone.utc))
         builder = builder.next_update(datetime.now(timezone.utc) + timedelta(crl_days))
