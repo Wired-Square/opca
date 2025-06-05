@@ -1,8 +1,10 @@
 #!/bin/sh
-export CRL_BUCKET="ca-public-bucket"
+export PUBLIC_BUCKET="ca-public-bucket"
+export CA_CERT_KEY="ca/ca.crt"
 export CRL_KEY="ca/crl.pem"
 export DAYS="30"
-export DB_BUCKET="ca-private-bucket"
+export CRL_DAYS="7"
+export PRIVATE_BUCKET="ca-private-bucket"
 export DB_KEY="ca-database/ca.sqlite"
 export LOCAL_DB_PATH="/tmp/ca.sqlite"
 export SLACK_URL="https://hooks.slack.com/services/xxx/yyy/zzz"
