@@ -30,10 +30,10 @@ from cryptography.hazmat.primitives.asymmetric import dh, dsa, ec, rsa, padding
 from cryptography.hazmat.primitives.serialization import Encoding, load_pem_parameters
 from cryptography.exceptions import InvalidSignature
 from urllib.parse import urlparse
-
+#TODO: show storing ca database and crl to 1password and to remote in cli
 
 # Constants
-OPCA_VERSION        = '0.17.1'
+OPCA_VERSION        = '0.17.3'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -2039,6 +2039,9 @@ class CertificateAuthority:
         if result.returncode != 0:
             error(result.stderr, 1)
 
+        if self.ca_database.get_config_attributes()['ca_public_store']:
+            self.upload_crl()
+
         return self.crl
 
     def generate_certificate_bundle(self, cert_type, item_title, config):
@@ -2622,6 +2625,9 @@ class CertificateAuthority:
                         filename=self.op_config['ca_database_filename'],
                         str_in=self.ca_database.export_database().decode('utf-8'))
 
+        if self.ca_database.get_config_attributes()['ca_private_store']:
+            self.upload_ca_database()
+
         return result
 
     def store_certbundle(self, certbundle):
@@ -2712,7 +2718,8 @@ class CertificateAuthority:
         if store_uri:
             ca_db_uri = store_uri
         else:
-            ca_db_uri = self.ca_database.get_config_attributes()['ca_private_store'] + '/' + self.one_password.vault + '.sqlite'
+            vault_name = self.one_password.vault.strip().lower()
+            ca_db_uri = self.ca_database.get_config_attributes()['ca_private_store'] + f'/{vault_name}.sqlite'
 
         binary_db = self.ca_database.export_database_binary()
 
