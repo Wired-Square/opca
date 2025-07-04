@@ -10,6 +10,7 @@ to generate keys and sign certificates, and then store them in 1Password.
 """
 
 import argparse
+import getpass
 import json
 import io
 import os
@@ -27,13 +28,13 @@ from cryptography.x509.oid import AuthorityInformationAccessOID, ExtensionOID, N
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import dh, dsa, ec, rsa, padding
-from cryptography.hazmat.primitives.serialization import Encoding, load_pem_parameters
+from cryptography.hazmat.primitives.serialization import Encoding, load_pem_parameters, pkcs12
 from cryptography.exceptions import InvalidSignature
 from urllib.parse import urlparse
 #TODO: show storing ca database and crl to 1password and to remote in cli
 
 # Constants
-OPCA_VERSION        = '0.17.3'
+OPCA_VERSION        = '0.17.4'
 OPCA_TITLE          = '1Password Certificate Authority'
 OPCA_SHORT_TITLE    = 'OPCA'
 OPCA_AUTHOR         = 'Alex Ferrara <alex@wiredsquare.com>'
@@ -227,6 +228,16 @@ def generate_ta_key(key_size=DEFAULT_KEY_SIZE['ta']):
 """
 
     return formatted_key
+
+def get_confirmed_password():
+    while True:
+        password = getpass.getpass('🔑 Enter your password: ')
+        confirm_password = getpass.getpass('🔁 Confirm your password: ')
+        if password == confirm_password:
+            print('✅ Password confirmed.')
+            return password
+        else:
+            print('❌ Passwords do not match. Please try again.\n')
 
 def handle_ca_action(ca_action, cli_args):
     """
@@ -493,6 +504,56 @@ def handle_cert_action(cert_action, cli_args):
 
         else:
             error('Certificate is not signed by this Certificate Authority', 1)
+
+    elif cert_action == 'export':
+        password = None
+
+        if cli_args.cn:
+            cert_cn = cli_args.cn
+            cert_serial = cert_authority.get_cert_serial_from_cn(cli_args.cn)
+
+        elif cli_args.serial:
+            cert_cn = cert_authority.get_cert_cn_from_serial(cli_args.serial)
+            cert_serial = cli_args.serial
+
+        else:
+            error(f'Subcommand has not been written:  { cli_args }', 1)
+
+        if cli_args.password:
+            password = get_confirmed_password()
+
+        cert_bundle = cert_authority.retrieve_certbundle(cert_cn)
+        certificate = cert_bundle.get_certificate(pem_format=False)
+        private_key = cert_bundle.get_private_key(pem_format=False)
+
+        if cli_args.format == 'pkcs12':
+            if private_key == None:
+                error('Private key is required for PKCS12 export', 1)
+
+            if password:
+                encryption = serialization.BestAvailableEncryption(password.encode())
+            else:
+                encryption = serialization.NoEncryption()
+
+            p12_data = pkcs12.serialize_key_and_certificates(
+                name=cert_cn.encode('utf-8'),
+                key=private_key,
+                cert=certificate,
+                cas=None,
+                encryption_algorithm=encryption
+            )
+
+            if not os.path.isfile(cli_args.outfile):
+                with open(cli_args.outfile, 'wb') as f:
+                    f.write(p12_data)
+
+                print(f'Certificate and key exported as PKCS12 to {COLOUR_BRIGHT}{cli_args.outfile}{COLOUR_RESET}')
+
+            else:
+                error(f'File {COLOUR_BRIGHT}{cli_args.outfile}{COLOUR_RESET} already exists. Aborting', 1)
+
+        else:
+            error(f'Invalid export format {COLOUR_BRIGHT}{cli_args.format}{COLOUR_RESET}', 99)
 
     elif cert_action == 'info':
         if cli_args.cn:
@@ -1400,8 +1461,23 @@ def setup_cert_subparser(subparsers):
     subparser_action_create_cert.add_argument('--alt', action='append', required=False,
         help='Alternate CN.')
 
+    subparser_action_export_cert = parser_cert_actions.add_parser('export',
+        help='Export a x509 CertificateBundle')
+    subparser_group_export_cert = subparser_action_export_cert.add_mutually_exclusive_group(
+        required=True)
+    subparser_group_export_cert.add_argument('-n', '--cn',
+        help='x509 CN attribute of the certificate to export')
+    subparser_group_export_cert.add_argument('-s', '--serial', type=int,
+        help='Serial number of the certificate to export')
+    subparser_action_export_cert.add_argument('-f', '--format', required=True,
+        help='Export format', choices=['pkcs12'])
+    subparser_action_export_cert.add_argument('-p', '--password', action='store_true',
+        help='Ask for export password')
+    subparser_action_export_cert.add_argument('-o', '--outfile', required=True,
+        help='Output filename')
+
     subparser_action_import_cert = parser_cert_actions.add_parser('import',
-        help='Create a new x509 CertificateBundle object')
+        help='Import a x509 CertificateBundle object from files')
     subparser_action_import_cert.add_argument('-c', '--cert-file', required=True,
         help='Certificate file')
     subparser_action_import_cert.add_argument('-k', '--key-file', required=False,
@@ -1747,7 +1823,7 @@ class CertificateAuthority:
 
         elif config['command'] == 'import':
             if one_password.item_exists(self.op_config['ca_title']):
-                error('Certificate Authority already exists. Aborting.', 0)
+                error('Certificate Authority already exists. Aborting.', 1)
 
             self.ca_certbundle = CertificateBundle(cert_type='ca',
                                       item_title=self.op_config['ca_title'],
@@ -1760,7 +1836,7 @@ class CertificateAuthority:
 
         elif config['command'] == 'retrieve':
             if not one_password.item_exists(self.op_config['ca_title']):
-                error('Certificate Authority does not exist. Aborting.', 0)
+                error('Certificate Authority does not exist. Aborting.', 1)
 
             result = self.one_password.get_document(self.op_config['ca_database_title'])
 
@@ -1878,7 +1954,7 @@ class CertificateAuthority:
         cert = self.ca_database.query_cert(cert_info=cert_info, valid_only=True)
 
         if not cert:
-            error(f'Certificate with { cert_info } not found. Aborting', 0)
+            error(f'Certificate with { cert_info } not found. Aborting', 1)
             return False
 
         return cert['cn']
@@ -1902,7 +1978,7 @@ class CertificateAuthority:
         cert = self.ca_database.query_cert(cert_info=cert_info, valid_only=True)
 
         if not cert:
-            error(f'Certificate with { cert_info } not found. Aborting', 0)
+            error(f'Certificate with { cert_info } not found. Aborting', 1)
             return False
 
         return cert['serial']
@@ -2322,7 +2398,7 @@ class CertificateAuthority:
         cert = self.ca_database.query_cert(cert_info=cert_info, valid_only=True)
 
         if not cert:
-            error(f'Certificate with { cert_info } not found. Aborting', 0)
+            error(f'Certificate with { cert_info } not found. Aborting', 1)
             return False
 
         item_serial = cert['serial']
@@ -2426,7 +2502,7 @@ class CertificateAuthority:
         cert = self.ca_database.query_cert(cert_info=cert_info, valid_only=True)
 
         if not cert:
-            error(f'Certificate with { cert_info } not found. Aborting', 0)
+            error(f'Certificate with { cert_info } not found. Aborting', 1)
             return False
 
         item_serial = cert['serial']
@@ -2597,7 +2673,7 @@ class CertificateAuthority:
                         x509.AuthorityInformationAccess(aia_access_descriptions),
                         critical=False)
             else:
-                error('Unknown certificate type. Aborting.', 0)
+                error('Unknown certificate type. Aborting.', 1)
 
         certificate = builder.sign(
             private_key=self.ca_certbundle.private_key, algorithm=hashes.SHA256(),
@@ -3363,21 +3439,25 @@ class CertificateBundle:
             self.csr = self.generate_csr(private_key=self.private_key, cert_cn=self.config['cn'])
             self.certificate = self.sign_certificate(self.csr)
 
-    def get_certificate(self):
+    def get_certificate(self, pem_format=True):
         """
-        Returns the PEM encoded certificate of the certificate bundle
+        Returns the certificate of the certificate bundle either PEM encoded, or as a certificate object
 
         Args:
             None
 
         Returns:
-            str
+            cryptography.hazmat.bindings._rust.x509.Certificate: pem_format == False
+            str: pem_format == True
 
         Raises:
             None
         """
 
-        return self.certificate.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+        if pem_format:
+            return self.certificate.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+        else:
+            return self.certificate
 
     def get_certificate_attrib(self, attrib):
         """
@@ -3473,24 +3553,28 @@ class CertificateBundle:
 
         return csr
 
-    def get_private_key(self):
+    def get_private_key(self, pem_format=True):
         """
-        Returns a PEM encoded private key for the certificate bundle
+        Returns the private key for the certificate bundle either PEM encoded or as the private key object
 
         Args:
             None
 
         Returns:
-            str
+            cryptography.hazmat.bindings._rust.openssl.rsa.RSAPrivateKey: pem_format == False
+            str: pem_format == True
 
         Raises:
             None
         """
         if self.private_key:
-            return self.private_key.private_bytes(
-                Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
-                serialization.NoEncryption()
-            ).decode('utf-8')
+            if pem_format:
+                return self.private_key.private_bytes(
+                    Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+                    serialization.NoEncryption()
+                ).decode('utf-8')
+            else:
+                return self.private_key
 
         return ""
 
