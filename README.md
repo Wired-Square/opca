@@ -1,89 +1,156 @@
 # opca - 1Password Certificate Authority
 
-A Python private certificate authority implementation that uses pyca/cryptography (https://cryptography.io)
-to generate keys and sign certificates, and then store them in 1Password.
+`opca` is a small PKI toolkit that uses [pyca/cryptography](https://cryptography.io)
+to create keys, CSRs, certificates, and CRLs, then stores them securely in [1Password](https://1password.com)
+via the 1Password CLI. It also includes helpers for generating OpenVPN artifacts and
+client profiles from 1Password-backed templates.
 
-The design contraints are
-  - Limit the dependendies.
-    - 1Password CLI
-    - Python 3
-    - Python Cryptography Library
+- **Minimal dependencies**: Python 3.9+, `cryptography`, and the 1Password CLI (`op`)
+- **No sensitive data written to disk**
+- **CLI-first workflow**
 
-  - Store no sensitive data on disk. Ever. 
+---
 
-This version of 1Password Certificate Authority represents a project with most features implemented.
+## 📦 Installation
 
-Future features (not extensive):
-- Implement private key passphrases
+### Requirements
 
-## Getting Started
+- Python 3.9+
+- [1Password CLI (`op`)](https://developer.1password.com/docs/cli/get-started)
 
-The only file you need from this project is the single Python file opca.py. Put it in the executable path of your computer.
-
-To make use of this project, you will need a [1Password][1password] account. Any account will do, although if you are using a personal account, and you have more than one account linked, you will have to pick the account on the cli each time instead of using the -a/--account option with your organisation (``myorg``).
-
-It is highly recommended that you create a new 'vault' in 1Password specifically for this private CA (``CA-Test``).
-
-You should also install 1Password CLI and make sure it is working. There is really good [documentation][1password-cli] on the 1Password website on how to accomplish this. Once you think you are done, you can confirm things are working by listing the available vaults. You should see your vault there.
+### Install from pypi
 
 ```shell
-op vault list --account myorg
+# install base package
+pip install opca
+
+# install with s3 publishing support
+pip install 'opca[s3]'
+```
+
+### Install from source
+
+```shell
+# from the repository root
+pip install .
+
+# optional extras
+pip install .[dev]   # tests, linters, mypy, build tools
+pip install .[s3]    # adds S3 publishing support via boto3
+```
+
+---
+
+## 🚀 Quick Start
+
+It is highly recommended that you create a new 'vault' in 1Password specifically for this private CA (e.g. ``CA-Test``).
+
+```shell
+op signin --account <acct>
+op vault create CA-Test --icon wrench
+
+op vault list --account <acct>
 ID                            NAME
 eegiiZood1Eihaed7beihee1ai    Private
 um2age0AzezuequaedaiChoht8    CA-Test
 ```
 
-### Create a new Certificate Authority
+### 1️⃣ Create a new Certificate Authority
 
 This is done in one step, and if everything goes well, you should see two objects created in your CA vault.
 
-- CA: The Certificate Authority certificate bundle containing the PEM encoded Private Key, Certificate and Certificate Signing Request
-- CA_Database: A SQLite database for keeping track of the certificates generated and their state
+- CA — certificate bundle containing private key, CSR, and certificate
+- CA_Database — SQLite database tracking issued certificates
 
 ```shell
-opca.py -a myorg -v CA-Test ca init --ca-days 3650 --crl-days 47 --days 398 -o "Test Org" -n "Test Org CA"
+opca -a <acct> -v CA-Test ca init \
+  -o "Test Org" \
+  -n "Test Org CA" \
+  --ou "Web Services" \
+  --city "Canberra" \
+  --state "ACT" \
+  --country "AU" \
+  --ca-days 3650 \
+  --crl-days 47 \
+  --days 398 \
+  --ca-url "https://ca.example.com/ca.crt" \
+  --crl-url "https://ca.example.com/crl.pem"
 ```
 
-### Create a Certificate
+### 2️⃣ Create a Certificate
 
-Certificates can have a number of uses, and x509 attributes are set accordingly. The following types are available
+Available types:
 
+- device: Specific options set for a device client certificate
 - vpnserver: Specific options set for a OpenVPN server certificate
 - vpnclient: Specific options set for a OpenVPN client certificate
 - webserver: This is what you usually want for a general certificate
 
 ```shell
-opca.py -a myorg -v CA-Test cert create  -t webserver -n www.myorg.com --alt testsite.myorg.com
+# Server certs
+opca -a <acct> -v CA-Test cert create -t webserver -n www.example.com --alt test.example.com
+opca -a <acct> -v CA-Test cert create -t vpnserver -n vpn.example.com
+
+# Client cert
+opca -a <acct> -v CA-Test cert create -t vpnclient -n john.smith
 ```
 
-### Create a Certificate Revocation List
+#### 📄 Bulk Profile File Format
 
-This is an important maintenance step. The CA_Database is updated with the current status of any certificates that may have expired since a certificate was last created, and stored into 1Password. If this is the first time generating a CRL, a new object will appear in your CA vault.
+When using the --file option for bulk certificategeneration, each line represents one
+certificate Common Name (CN) with optional --alt DNS names.
+Comments and blank lines are ignored.
+
+Example clients.txt:
+
+```text
+host.domain.com
+host2.domain.com --alt www.domain.com
+host3.domain.com --alt mail.domain.com --alt smtp.domain.com --alt imap.domain.com
+#host99.domain.com --alt dns1.domain.com
+```
+
+Each non-comment line corresponds to one generated client profile.
+
+The --alt entries populate Subject Alternative Names (SANs) in the certificate.
+
+Lines starting with # are ignored.
+
+---
+
+### 3️⃣ Create a Certificate Revocation List
+```shell
+opca -a <acct> -v CA-Test crl create
+```
+
+Creates or updates items in your vault:
 
 - CRL: The PEM encoded Certificate Revocation List
 
+---
+
+### Renew or Revoke a Certificate
 ```shell
-opca.py -a myorg -v CA-Test crl create
+# Renew (keeps original settings when CSR exists)
+opca -a <acct> -v CA-Test cert renew -n www.example.com
+
+# Revoke by CN or serial
+opca -a <acct> -v CA-Test cert revoke -n www.example.com
+opca -a <acct> -v CA-Test cert revoke -s 5
 ```
 
-### Renew a Certificate
+Updates:
 
-If you created the certificate using this tool, and the certificate bundle still has a valid ``csr``, you can renew a certificate retaining the options that were originally requested.
-
-```shell
-opca.py -a myorg -v CA-Test cert renew -n www.myorg.com
-```
-
-Once completed,
+- The CA_Database is updated
 - The original certificate bundle title is renamed to the ``serial number``
 - A new certificate bundle is stored with the ``cn`` as the title
-- The CA_Database is updated
-- The PEM encoded certificate is displayed in the terminal
 
-### Check the Certificate Database
+### Database Queries
+```shell
+opca -a <acct> -v CA-Test database list --expiring
+```
 
-If you want to check the status of certificates that have been issued, you can use the ``database list`` option. You can filter on
-
+Other filers:
 - -a/--all: All certificates
 - -e/--expired: Expired certificates
 - -r/--revoked: Revoked certificates
@@ -92,44 +159,82 @@ If you want to check the status of certificates that have been issued, you can u
 - -n/--cn: A specific certificate CN
 - -s/--serial: A specific certificate serial number
 
+## 🔐 OpenVPN Integration
+
+Generate and manage OpenVPN artifacts stored in 1Password.
+
+### Generate Base Configuration
 ```shell
-opca.py -a myorg -v CA-Test database list --expiring
+opca -a <acct> -v CA-Test openvpn generate --server
+opca -a <acct> -v CA-Test openvpn generate --dh
+opca -a <acct> -v CA-Test openvpn generate --ta-key
 ```
 
-## OpenVPN Credentials
-
-This project can be used to generate and manage certificates for OpenVPN servers and clients. Once you are done, there will be a number of new objects stored in your 1Password vault.
-
-- OpenVPN: The OpenVPN configuration object
-- VPN_*: A OpenVPN profile
-
-### Generating the OpenVPN configuration settings
-
-Configuring [OpenVPN][openvpn] is out of scope for this document, but there is very good [documentation][openvpn-config] on their website. The idea is that you create a template of your client configuration in the OpenVPN configuration object which is used to create the VPN profile using secrets also stored in 1Password.
-
-This step creates the basic OpenVPN configuration object, along with some sample configuration, the Diffie-Hellman parameters and a TLS Authentication key.
-
+### Retrieve or Import Artifacts
 ```shell
-opca.py -a myorg -v CA-Test openvpn gen-sample-vpn-server
-opca.py -a myorg -v CA-Test openvpn gen-dh
-opca.py -a myorg -v CA-Test openvpn gen-ta-key
+# Retrieve
+opca -a <acct> -v CA-Test openvpn get --dh
+opca -a <acct> -v CA-Test openvpn get --ta-key
+opca -a <acct> -v CA-Test openvpn get --template sample
+
+# Import
+opca -a <acct> -v CA-Test openvpn import --dh --file dh.pem
+opca -a <acct> -v CA-Test openvpn import --ta-key --file ta.key
+```
+
+### Generating OpenVPN Profiles
+```shell
+# Single CN
+opca -a <acct> -v CA-Test openvpn generate --profile \
+  --template sample \
+  --cn john.smith
+
+# Bulk (from file)
+opca -a <acct> -v CA-Test openvpn generate --profile \
+  --template sample \
+  --file clients.txt
 ```
 
 Once you have the OpenVPN configuration object, you can customise the ``sample`` template to match your environment. It is recommended that you copy the sample template, and create a new ``text`` field in the ``Template`` section of the OpenVPN configuration object.
 
-### Generating a VPN profile
+Creates new items like VPN_john.smith in 1Password.
 
-If everything is set up correctly, we should see some new objects being created
+---
 
-- vpn.myorg.com: VPN server certificate
-- john.smith: VPN client certificate for ``John Smith``
-- VPN_john.smith: A VPN client profile for ``John Smith`` that can be imported into the OpenVPN client
+## 🧪 Testing
+
+### Unit Tests
 
 ```shell
-opca.py -a myorg -v CA-Test cert create -t vpnserver -n vpn.myorg.com
-opca.py -a myorg -v CA-Test cert create -t vpnclient -n john.smith
-opca.py -a myorg -v CA-Test openvpn gen-vpn-profile -t sample -n john.smith
+pytest
 ```
+
+### End-to-End (real vault)
+
+```shell
+OP_ACCOUNT=<acct> pytest -m e2e
+```
+
+---
+
+## 🧱 Project Layout
+```shell
+src/opca/
+  cli.py                      # CLI entrypoint
+  __main__.py                 # allows `python -m opca`
+  constants.py
+  commands/                   # subcommands (ca, cert, crl, database, openvpn)
+  models/
+  services/                   # 1Password, crypto, storage, etc.
+  utils/                      # formatting, IO, crypto helpers
+  storage/                    # static or template data
+```
+
+---
+
+## 📄 License
+
+MIT © Wired Square
 
 [1password]: https://www.1password.com
 [1password-cli]: https://developer.1password.com/docs/cli/get-started
