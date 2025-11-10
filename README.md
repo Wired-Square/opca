@@ -39,6 +39,22 @@ pip install .[dev]   # tests, linters, mypy, build tools
 pip install .[s3]    # adds S3 publishing support via boto3
 ```
 
+### AWS Authentication
+
+If you intend to publish your CA certificate, Certificate Revocation List (CRL), or CA database
+to AWS, you will need to perform some additional steps. The most obvious being that you should 
+install the S3 options above.
+
+You will also need the [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html#getting-started-install-instructions) installed.
+
+1Password has the ability to keep your AWS CLI credentials stored in a vault. [Follow the guide](https://developer.1password.com/docs/cli/shell-plugins/aws/) to set this up.
+
+If everything went well, you will be able to export your AWS credentials to the shell environment with the following command
+
+```shell
+op plugin run -- aws configure export-credentials --format env
+```
+
 ---
 
 ## 🚀 Quick Start
