@@ -13,7 +13,23 @@ from opca.services.ca_errors import CADatabaseError
 
 
 class CertificateAuthorityDB:
-    """ Class to manage a database for the CA in SQLite """
+    """
+    SQLite database manager for Certificate Authority operations.
+
+    Maintains an in-memory SQLite database tracking:
+    - All issued certificates with serial numbers, CNs, expiry dates, and status
+    - CA configuration (serial counters, validity periods, URLs, storage locations)
+    - Certificate lifecycle state (valid, expired, revoked, expiring soon)
+
+    The database uses schema versioning with automatic migrations for upgrades.
+    It can be exported as SQL text or binary SQLite format for storage in 1Password
+    or remote backends.
+
+    Schema versions:
+    - v1: Initial schema with config and certificate_authority tables
+    - v2: Added 'ou' (organizational unit) field
+    - v3: Added storage location fields (ca_public_store, ca_private_store, ca_backup_store)
+    """
 
     _default_schema_version: int = 3
 
@@ -330,7 +346,20 @@ class CertificateAuthorityDB:
         return memory_file.getvalue()
 
     def export_database_binary(self) -> bytes:
-        """Backup the in-memory SQLite database and return it as bytes (binary .sqlite format)."""
+        """
+        Export the in-memory database as a binary SQLite file.
+
+        Creates a temporary file, backs up the in-memory database to it,
+        and returns the raw binary content. This format is suitable for
+        uploading to remote storage or archiving.
+
+        Returns:
+            bytes: The complete SQLite database in binary format
+
+        Note:
+            This is more efficient than export_database() for large databases
+            and preserves the exact SQLite structure including indexes.
+        """
         with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=True) as tmp_file:
 
             disk_conn = sqlite3.connect(tmp_file.name)
@@ -436,10 +465,24 @@ class CertificateAuthorityDB:
 
     def increment_serial(self, serial_type: str, serial_number: Optional[int] = None) -> int:
         """
-        Returns the next available serial number, and increments it in the database
+        Get the current serial number and increment the counter for next use.
+
+        Serial numbers are used for certificates ('cert') and CRLs ('crl').
+        The counter is automatically incremented after returning the current value.
 
         Args:
-            serial_type (str): The type of serial to act on. Either 'cert' or 'crl'
+            serial_type: The type of serial to act on - either 'cert' or 'crl'
+            serial_number: Optional explicit serial to ensure counter is at least this value
+
+        Returns:
+            int: The current serial number (before increment)
+
+        Raises:
+            ValueError: If serial_type is not 'cert' or 'crl'
+
+        Note:
+            If serial_number is provided and is greater than the current counter,
+            the counter will jump to that value before incrementing.
         """
         cursor = self.conn.cursor()
 
@@ -480,16 +523,32 @@ class CertificateAuthorityDB:
 
     def process_ca_database(self, revoke_serial: Optional[Union[int, str]] = None) -> bool:
         """
-        Process the CA database.
-         - The status of certifiates might change due to time
-         - Gather a list of
-           - Expired Certificates
-           - Revoked Certificates
-           - Certificates expiring soon
-           - Valid Certificates
+        Process the certificate database to update certificate states.
+
+        Scans all certificates and:
+        1. Updates status based on expiry dates (Valid -> Expired)
+        2. Optionally revokes a certificate by serial number
+        3. Categorizes certificates into sets:
+           - certs_expired: Certificates past their not_after date
+           - certs_revoked: Certificates marked as revoked
+           - certs_expires_soon: Valid certificates expiring within 30 days
+           - certs_valid: All other valid certificates
+
+        The status field in the database is automatically updated for expired
+        or newly revoked certificates.
 
         Args:
-            revoke_serial (int, optional): Serial number of the certificate to revoke.
+            revoke_serial: Optional serial number of certificate to revoke during processing
+
+        Returns:
+            bool: True if any database records were modified, False otherwise
+
+        Side effects:
+            Updates the following instance attributes with certificate serial sets:
+            - self.certs_expired
+            - self.certs_revoked
+            - self.certs_expires_soon
+            - self.certs_valid
         """
         db_changed = False
         self.certs_expired = set()

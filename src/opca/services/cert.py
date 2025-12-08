@@ -18,7 +18,21 @@ from opca.services.ca_errors import CAError, InvalidCertificateError
 
 
 class CertificateBundle:
-    """ Class to contain x509 Certificates, Private Keys and Signing Requests """
+    """
+    Container for X.509 certificate bundles including private keys, certificates, and CSRs.
+
+    A CertificateBundle encapsulates all cryptographic materials for a single identity:
+    - Private key (RSA, EC, or DSA)
+    - X.509 certificate
+    - Certificate Signing Request (CSR)
+    - Certificate metadata and configuration
+
+    The bundle can be created in two modes:
+    1. Generate mode: Creates a new private key and CSR from configuration
+    2. Import mode: Loads existing cryptographic materials from PEM-encoded data
+
+    All operations maintain consistency between the private key and certificate.
+    """
     def __init__(self,
             cert_type: str,
             item_title: str,
@@ -300,7 +314,18 @@ class CertificateBundle:
             private_key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey | dsa.DSAPrivateKey,
         ) -> x509.CertificateSigningRequest:
         """
-        Generate a certificate signing request for the current Certificate Bundle
+        Generate a Certificate Signing Request (CSR) for this certificate bundle.
+
+        Creates a CSR with the provided common name and any additional subject
+        attributes from the bundle's configuration (country, state, city, org, ou, email).
+        If alt_dns_names are specified in config, they are added as SubjectAlternativeName.
+
+        Args:
+            cert_cn: Common Name for the certificate subject
+            private_key: Private key to sign the CSR
+
+        Returns:
+            x509.CertificateSigningRequest: The generated CSR signed with the private key
         """
 
         x509_attributes = [x509.NameAttribute(x509.NameOID.COMMON_NAME, cert_cn)]
@@ -387,7 +412,19 @@ class CertificateBundle:
 
     def is_valid(self) -> bool:
         """
-        Returns true if the certificate bundle private key and certificate are consistent
+        Validate that this certificate bundle is consistent and within its validity period.
+
+        Checks:
+        1. Certificate is within its validity period (not_before <= now <= not_after)
+        2. If a private key exists, it matches the certificate's public key
+        3. Certificate type matches bundle type (CA vs. end-entity)
+
+        Returns:
+            bool: True if the bundle is valid and consistent
+
+        Note:
+            If no private key is set (public-only bundle), only validates the certificate's
+            time validity without checking key consistency.
         """
         current_time = datetime.now(timezone.utc)
         not_valid_before = self.certificate.not_valid_before_utc.replace(tzinfo=timezone.utc)
@@ -411,8 +448,26 @@ class CertificateBundle:
 
     def self_sign_ca(self, csr: x509.CertificateSigningRequest) -> x509.Certificate:
         """
-        Self-sign a *CA* certificate from the CSR (CA bootstrap only).
-        Leaves all end-entity signing to CertificateAuthority.sign_certificate(...).
+        Self-sign a CA certificate from a CSR (bootstrap operation only).
+
+        This method is used ONLY during CA initialization to create the root CA
+        certificate. All other certificate signing should use
+        CertificateAuthority.sign_certificate().
+
+        Creates a self-signed certificate with:
+        - BasicConstraints(ca=True)
+        - KeyUsage(key_cert_sign, crl_sign)
+        - Subject == Issuer (self-signed)
+        - SubjectKeyIdentifier and AuthorityKeyIdentifier
+
+        Args:
+            csr: The CSR to self-sign (subject becomes both subject and issuer)
+
+        Returns:
+            x509.Certificate: The self-signed CA certificate
+
+        Raises:
+            CAError: If called on a non-CA bundle or if private key is missing
         """
         if self.type != 'ca':
             raise CAError("self_sign_ca() called on non-CA bundle")

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opca"
-version = "0.99.0"
+version = "0.99.1"
 description = "1Password Certificate Authority tooling: generate keys/CSRs/certs and store in 1Password."
 readme = "README.md"
 requires-python = ">=3.9"

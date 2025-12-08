@@ -23,12 +23,6 @@ def read_bytes(path: StrPath) -> bytes:
         error(f"Permission denied for file '{file_path}'.", 1)
     except IOError as err:
         error(f"I/O error while reading file '{file_path}': {err}", 1)
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"File '{file_path}' not found.") from e
-    except PermissionError as e:
-        raise PermissionError(f"Permission denied for file '{file_path}'.") from e
-    except OSError as err:
-        raise OSError(f"I/O error while reading file '{file_path}': {err}") from err
 
 def write_bytes(
     path: StrPath,
@@ -97,14 +91,6 @@ def write_bytes(
         error(f"Path '{file_path}' not found.", 1)
     except OSError as err:
         error(f"I/O error while writing file '{file_path}': {err}", 1)
-    except PermissionError as e:
-        raise PermissionError(f"Permission denied for file '{file_path}'.") from e
-    except IsADirectoryError as e:
-        raise IsADirectoryError(f"Path '{file_path}' is a directory.") from e
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"Path '{file_path}' not found.") from e
-    except OSError as err:
-        raise OSError(f"I/O error while writing file '{file_path}': {err}") from err
 
 def parse_bulk_file(path: str) -> Iterable[Dict[str, object]]:
     """

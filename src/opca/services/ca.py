@@ -35,7 +35,20 @@ from opca.utils.datetime import format_datetime
 
 
 class CertificateAuthority:
-    """ Class to act as a Certificate Authority """
+    """
+    Certificate Authority manager for PKI operations.
+
+    This class handles all certificate authority operations including:
+    - Initializing or importing a CA
+    - Signing certificate requests
+    - Managing certificate lifecycle (issue, renew, revoke)
+    - Generating and managing Certificate Revocation Lists (CRLs)
+    - Storing all sensitive materials in 1Password vault
+    - Publishing CA certificates and CRLs to storage backends
+
+    All private keys and certificates are stored securely in 1Password,
+    with an SQLite database tracking issued certificates and their status.
+    """
     def __init__(self, one_password, config, op_config=DEFAULT_OP_CONF):
         """
         Construct a certificate authority object.
@@ -375,7 +388,24 @@ class CertificateAuthority:
 
     def generate_certificate_bundle(self, cert_type: str, item_title: str, config: dict) -> CertificateBundle:
         """
-        Creates a certificate bundle from configuration
+        Generate a new certificate bundle with a fresh private key and CA-signed certificate.
+
+        This method creates a new private key, generates a CSR from the provided
+        configuration, signs it with the CA's private key, and stores the complete
+        bundle in 1Password.
+
+        Args:
+            cert_type: Type of certificate ('ca', 'device', 'vpnclient', 'vpnserver', 'webserver')
+            item_title: Name to store the certificate bundle under in 1Password
+            config: Certificate configuration including CN, key size, validity period, etc.
+
+        Returns:
+            CertificateBundle: The newly created and signed certificate bundle
+
+        Raises:
+            CAError: If CA is not initialized
+            InvalidCertificateError: If the certificate configuration is invalid
+            CAStorageError: If storing to 1Password fails
         """
         cert_bundle = CertificateBundle(
             cert_type=cert_type,
@@ -458,7 +488,18 @@ class CertificateAuthority:
 
     def rebuild_ca_database(self) -> dict:
         """
-        Rebuild the CA certificate database from 1Password
+        Rebuild the CA certificate database by scanning all items in 1Password.
+
+        This is a recovery operation that reconstructs the SQLite database from
+        scratch by enumerating all certificate items in the 1Password vault.
+        Useful if the database is lost or corrupted.
+
+        Returns:
+            dict: Dictionary with 'next_serial' (int) and 'count' (int) keys
+
+        Raises:
+            CADatabaseError: If listing 1Password items or storing database fails
+            DuplicateCertificateError: If duplicate serial numbers are found
         """
         result_dict = {}
         max_serial = 0
@@ -623,7 +664,21 @@ class CertificateAuthority:
 
     def revoke_certificate(self, cert_info: dict) -> bool:
         """
-        Revokes a previously signed certificate
+        Revoke a valid certificate and update the CA database.
+
+        Marks a certificate as revoked in the database and renames the 1Password
+        item to its serial number. The certificate will be included in the next CRL.
+
+        Args:
+            cert_info: Dictionary with 'serial', 'cn', or 'title' to identify the certificate
+
+        Returns:
+            bool: True if revocation succeeded
+
+        Raises:
+            CANotFoundError: If the certificate doesn't exist or is already revoked
+            CADatabaseError: If database update fails
+            CAError: If renaming the certificate bundle fails
         """
 
         cert = self.ca_database.query_cert(cert_info=cert_info, valid_only=True)
@@ -651,10 +706,29 @@ class CertificateAuthority:
 
     def sign_certificate(self, csr: x509.CertificateSigningRequest, target: str | None = None) -> x509.Certificate:
         """
-        Sign a csr to create a x509 certificate.
+        Sign a Certificate Signing Request to create an X.509 certificate.
 
-        target: One of {'ca','device','vpnclient','vpnserver','webserver'} (or None for a generic end-entity)
+        Validates the CSR signature, increments the CA serial number, and builds
+        a certificate with appropriate extensions based on the target type.
 
+        Args:
+            csr: The certificate signing request to sign
+            target: Certificate type - one of {'ca', 'device', 'vpnclient', 'vpnserver', 'webserver'}
+                   or None for a generic end-entity certificate
+
+        Returns:
+            x509.Certificate: The signed certificate
+
+        Raises:
+            CAError: If CA is not initialized
+            InvalidCertificateError: If CSR signature is invalid or key type is unsupported
+
+        Certificate Extensions by Type:
+            - ca: BasicConstraints(ca=True), KeyUsage(key_cert_sign, crl_sign)
+            - device: KeyUsage(digital_signature, key_encipherment), ExtendedKeyUsage(client_auth), SAN
+            - vpnclient: KeyUsage(digital_signature), ExtendedKeyUsage(client_auth) [critical]
+            - vpnserver: KeyUsage(digital_signature, key_encipherment), ExtendedKeyUsage(server_auth) [critical]
+            - webserver/None: KeyUsage(digital_signature, key_encipherment), ExtendedKeyUsage(server_auth, client_auth), SAN, CRL Distribution Points, AIA
         """
 
         if self.ca_database is None or self.ca_certbundle is None:
