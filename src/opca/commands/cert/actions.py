@@ -126,7 +126,7 @@ def handle_cert_export(app: App) -> int:
     elif fmt == "pkcs12":
         password = None
 
-        if app.args.password:
+        if app.args.p12_password:
             password = get_confirmed_password()
 
         try:

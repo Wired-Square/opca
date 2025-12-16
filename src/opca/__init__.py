@@ -9,7 +9,7 @@ with optional storage to 1Password, S3, or Rsync backends.
 """
 
 # ---- Package metadata ----
-__version__ = "0.99.1"
+__version__ = "0.99.2"
 __title__ = "1Password Certificate Authority"
 __short_title__ = "OPCA"
 __author__ = "Alex Ferrara <alex@wiredsquare.com>"

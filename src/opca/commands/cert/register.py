@@ -82,7 +82,7 @@ def _add_export_subcommand(actions: argparse._SubParsersAction) -> argparse.Argu
     )
     parser.add_argument('--p12-password',
         metavar='PASS',
-        help='Password for PKCS#12 (omit for no password)'
+        help='Ask for a export password (pkcs12)'
     )
 
     parser.set_defaults(handler=handle_cert_export)
