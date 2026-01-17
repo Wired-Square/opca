@@ -59,7 +59,7 @@ op plugin run -- aws configure export-credentials --format env
 
 ## 🚀 Quick Start
 
-It is highly recommended that you create a new 'vault' in 1Password specifically for this private CA (e.g. ``CA-Test``).
+It is highly recommended that you create a new 'vault' in 1Password specifically for this private CA (e.g. ``CA-Test``). ``acct`` is a 1Password Account. Example: company.1password.com (default: None)
 
 ```shell
 op signin --account <acct>
