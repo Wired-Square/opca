@@ -436,12 +436,8 @@ def handle_dkim_verify(app: App) -> int:
 
     from opca.services.route53 import Route53
 
-    try:
-        r53 = Route53()
-        verified = r53.verify_dns_record(dns_name, expected_record, timeout=10, interval=2)
-    except Exception:
-        # If Route53 service fails to initialize, try direct DNS lookup
-        verified = _verify_dns_direct(dns_name, expected_record)
+    r53 = Route53()
+    verified = r53.verify_dns_record(dns_name, expected_record, timeout=10, interval=2)
 
     print_result(verified)
 
@@ -461,32 +457,3 @@ def handle_dkim_verify(app: App) -> int:
         print(f"Status:    {COLOUR_WARNING}Not verified{COLOUR_RESET}")
         print(f"\nThis may be due to DNS propagation delay. Try again later.")
         return EXIT_FATAL
-
-
-def _verify_dns_direct(record_name: str, expected_value: str) -> bool:
-    """
-    Verify DNS record using dig command directly.
-    Fallback when Route53 service is not available.
-    """
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["dig", "+short", "TXT", record_name],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            # dig returns quoted strings, remove quotes and newlines
-            txt_value = result.stdout.replace('"', "").replace("\n", "").strip()
-            # Extract the public key for comparison
-            if "p=" in expected_value and "p=" in txt_value:
-                expected_key = expected_value.split("p=")[1].split(";")[0].strip()
-                actual_key = txt_value.split("p=")[1].split(";")[0].strip()
-                return expected_key in actual_key or actual_key in expected_key
-            return expected_value in txt_value
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-
-    return False

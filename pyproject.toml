@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opca"
-version = "0.99.3"
+version = "0.99.4"
 description = "1Password Certificate Authority tooling: generate keys/CSRs/certs and store in 1Password."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -30,7 +30,7 @@ dependencies = [
 # Optional/extra features (installed via: pip install opca[s3] or opca[aws])
 [project.optional-dependencies]
 s3 = ["boto3>=1.26"]
-aws = ["boto3>=1.26"]
+aws = ["boto3>=1.26", "dnspython>=2.4"]
 dev = [
   "pytest",
   "pytest-cov",

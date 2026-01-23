@@ -301,8 +301,7 @@ class Route53:
         """
         Verify that a DNS TXT record is published and contains the expected value.
 
-        Uses Python's socket module to query DNS. Falls back to a simple check
-        if dns.resolver is not available.
+        Uses dnspython to query DNS.
 
         Args:
             record_name: The DNS record name to query.
@@ -312,27 +311,16 @@ class Route53:
 
         Returns:
             True if the record is verified, False otherwise (logs warning).
+
+        Raises:
+            Route53NotConfiguredError: If dnspython is not installed.
         """
-        # Try to use dnspython if available, otherwise use subprocess with dig
         try:
             import dns.resolver
-            return self._verify_with_dnspython(
-                record_name, expected_value, timeout, interval
-            )
         except ImportError:
-            return self._verify_with_dig(
-                record_name, expected_value, timeout, interval
+            raise Route53NotConfiguredError(
+                "dnspython is not installed. Install with: pip install opca[aws]"
             )
-
-    def _verify_with_dnspython(
-        self,
-        record_name: str,
-        expected_value: str,
-        timeout: int,
-        interval: int,
-    ) -> bool:
-        """Verify DNS record using dnspython."""
-        import dns.resolver
 
         start_time = time.time()
         # Extract the p= value for comparison (ignoring formatting differences)
@@ -351,45 +339,6 @@ class Route53:
                 pass
             except Exception as e:
                 log.debug(f"DNS query error: {e}")
-
-            time.sleep(interval)
-
-        warning(f"DNS verification timed out for {record_name}")
-        return False
-
-    def _verify_with_dig(
-        self,
-        record_name: str,
-        expected_value: str,
-        timeout: int,
-        interval: int,
-    ) -> bool:
-        """Verify DNS record using dig command."""
-        start_time = time.time()
-        expected_key = self._extract_dkim_key(expected_value)
-
-        while time.time() - start_time < timeout:
-            try:
-                result = subprocess.run(
-                    ["dig", "+short", "TXT", record_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    # dig returns quoted strings, remove quotes
-                    txt_value = result.stdout.replace('"', "").replace("\n", "").strip()
-                    if expected_key and expected_key in txt_value:
-                        return True
-                    if expected_value in txt_value:
-                        return True
-            except subprocess.TimeoutExpired:
-                pass
-            except FileNotFoundError:
-                warning("dig command not found, skipping DNS verification")
-                return False
-            except Exception as e:
-                log.debug(f"dig error: {e}")
 
             time.sleep(interval)
 
