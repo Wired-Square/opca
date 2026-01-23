@@ -27,9 +27,10 @@ dependencies = [
   "cryptography>=46.0.3",
 ]
 
-# Optional/extra features (installed via: pip install opca[s3])
+# Optional/extra features (installed via: pip install opca[s3] or opca[aws])
 [project.optional-dependencies]
 s3 = ["boto3>=1.26"]
+aws = ["boto3>=1.26"]
 dev = [
   "pytest",
   "pytest-cov",

@@ -66,6 +66,7 @@ COLOUR_RESET = COLOUR['reset']
 DEFAULT_KEY_SIZE = {
     'ca': 4096,
     'dh': 2048,
+    'dkim': 2048,
     'ta': 2048,
     'device'   : 2048,
     'vpnclient': 2048,
