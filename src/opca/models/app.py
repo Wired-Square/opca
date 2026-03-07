@@ -33,6 +33,7 @@ class App:
         # initlike: commands allowed to run without an existing CA DB (they can create it)
         initlike = (
             (cmd == "ca" and sub in {"init", "import"})
+            or (cmd == "csr")
             or (cmd == "database" and sub == "rebuild")
         )
 

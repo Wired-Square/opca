@@ -68,6 +68,7 @@ DEFAULT_KEY_SIZE = {
     'dh': 2048,
     'dkim': 2048,
     'ta': 2048,
+    'appledev' : 2048,
     'device'   : 2048,
     'vpnclient': 2048,
     'vpnserver': 2048,

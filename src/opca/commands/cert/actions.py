@@ -124,10 +124,7 @@ def handle_cert_export(app: App) -> int:
         return EXIT_OK if ok else EXIT_FATAL
 
     elif fmt == "pkcs12":
-        password = None
-
-        if app.args.p12_password:
-            password = get_confirmed_password()
+        password = get_confirmed_password()
 
         try:
             p12_bytes = cert_bundle.export_pkcs12(

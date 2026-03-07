@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import ca, cert, crl, database, dkim, openvpn
+from . import ca, cert, crl, csr, database, dkim, openvpn
 
 def register_all(subparsers: argparse._SubParsersAction) -> None:
     """
@@ -13,6 +13,7 @@ def register_all(subparsers: argparse._SubParsersAction) -> None:
     ca.register(subparsers)
     cert.register(subparsers)
     crl.register(subparsers)
+    csr.register(subparsers)
     database.register(subparsers)
     dkim.register(subparsers)
     openvpn.register(subparsers)
