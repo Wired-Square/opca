@@ -568,7 +568,7 @@ class CertificateAuthority:
 
         return {"next_serial": next_serial, "count": self.ca_database.count_certs()}
 
-    def rename_certbundle(self, src_item_title: str, dst_item_title: str) -> bool:
+    def rename_certbundle(self, src_item_title: str, dst_item_title: str, persist: bool = True) -> bool:
         """
         Renames a certificate bundle in 1Password
         """
@@ -589,10 +589,14 @@ class CertificateAuthority:
         if result.returncode != 0:
             raise CAStorageError(f"Unable to rename the item {src_item_title} to {dst_item_title}.")
 
-        if self.ca_database.update_cert(db_item) and self.store_ca_database().returncode == 0:
-            return True
+        if not self.ca_database.update_cert(db_item):
+            raise CADatabaseError("Rename succeeded in 1Password but database update failed.")
 
-        raise CADatabaseError("Rename succeeded in 1Password but database update failed.")
+        if persist:
+            if self.store_ca_database().returncode != 0:
+                raise CADatabaseError("Rename succeeded in 1Password but database update failed.")
+
+        return True
 
     def renew_certificate_bundle(self, cert_info: dict) -> str:
         """
@@ -630,12 +634,13 @@ class CertificateAuthority:
         if item_title != str(item_serial):
             self.rename_certbundle(
                 src_item_title=item_title,
-                dst_item_title=str(item_serial)
+                dst_item_title=str(item_serial),
+                persist=False,
             )
         else:
             raise CAError("Item title and serial are the same; unexpected state.")
 
-        result = self.store_certbundle(certbundle=cert_bundle)
+        result = self.store_certbundle(certbundle=cert_bundle, persist=False)
 
         if result.returncode != 0:
             raise CAStorageError("Unable to store the new certificate bundle.")
@@ -713,7 +718,8 @@ class CertificateAuthority:
 
             if item_title != str(item_serial):
                 result = self.rename_certbundle(src_item_title=item_title,
-                                                dst_item_title=str(item_serial))
+                                                dst_item_title=str(item_serial),
+                                                persist=False)
 
                 if not result:
                     raise CAError(f"Unable to rename the certificate bundle {item_title} [{item_serial}]")
@@ -1010,7 +1016,7 @@ class CertificateAuthority:
         return result
 
     def store_certbundle(self, certbundle, issuer: Optional[str] = None,
-                         issuer_subject: Optional[str] = None):
+                         issuer_subject: Optional[str] = None, persist: bool = True):
         """
         Store a certificate bundle into 1Password
 
@@ -1027,7 +1033,7 @@ class CertificateAuthority:
         """
 
         item_title = certbundle.get_title()
-        item_serial = certbundle.certificate.serial_number
+        item_serial = str(certbundle.certificate.serial_number)
         is_external = issuer is not None
 
         if not certbundle.is_valid():
@@ -1084,10 +1090,10 @@ class CertificateAuthority:
         )
 
         if is_external:
-            if self.ca_database.add_external_cert(db_item):
+            if self.ca_database.add_external_cert(db_item) and persist:
                 self.store_ca_database()
         else:
-            if self.ca_database.add_cert(db_item):
+            if self.ca_database.add_cert(db_item) and persist:
                 self.store_ca_database()
 
         return result

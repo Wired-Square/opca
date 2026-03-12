@@ -55,7 +55,8 @@ class CertificateAuthorityDB:
         self.ext_certs_expired: Set[str] = set()
         self.ext_certs_expires_soon: Set[str] = set()
         self.ext_certs_valid: Set[str] = set()
-        self.conn = sqlite3.connect(':memory:')
+        self._dirty = True
+        self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.config_attrs: Tuple[str, ...] = (
             "next_serial",
             "next_crl_serial",
@@ -341,6 +342,7 @@ class CertificateAuthorityDB:
         try:
             cursor.execute(sql, tuple(cert_db_item.values()))
             self.conn.commit()
+            self._dirty = True
             return True
 
         except sqlite3.Error as sqlite_error:
@@ -374,6 +376,7 @@ class CertificateAuthorityDB:
             if cursor.rowcount == 0:
                 raise CADatabaseError(f"No certificate found with serial number {serial_number}.")
 
+            self._dirty = True
             return True
 
         except sqlite3.Error as sqlite_error:
@@ -429,6 +432,7 @@ class CertificateAuthorityDB:
         try:
             cursor.execute(sql, tuple(cert_db_item.values()))
             self.conn.commit()
+            self._dirty = True
             return True
         except sqlite3.Error as sqlite_error:
             raise CADatabaseError(f"SQLite external cert insert error: {sqlite_error}") from sqlite_error
@@ -467,7 +471,7 @@ class CertificateAuthorityDB:
 
         if 'serial' in cert_info:
             where_conditions.append("serial=?")
-            values.append(cert_info["serial"])
+            values.append(str(cert_info["serial"]))
         elif 'title' in cert_info:
             where_conditions.append("title=?")
             values.append(cert_info["title"])
@@ -631,7 +635,7 @@ class CertificateAuthorityDB:
 
         if 'serial' in cert_info:
             where_conditions.append("serial=?")
-            values.append(cert_info["serial"])
+            values.append(str(cert_info["serial"]))
 
         elif 'title' in cert_info:
             where_conditions.append("title=?")
@@ -717,6 +721,7 @@ class CertificateAuthorityDB:
         cursor.execute(f"UPDATE config SET {column_name} = ?", (str(next_serial),))
 
         self.conn.commit()
+        self._dirty = True
         cursor.close()
 
         return current_value
@@ -750,6 +755,9 @@ class CertificateAuthorityDB:
             - self.certs_expires_soon
             - self.certs_valid
         """
+        if not self._dirty and revoke_serial is None:
+            return False
+
         db_changed = False
         self.certs_expired = set()
         self.certs_expires_soon = set()
@@ -853,6 +861,7 @@ class CertificateAuthorityDB:
         finally:
             cursor.close()
 
+        self._dirty = False
         return db_changed
 
     # --------------------------
