@@ -10,3 +10,4 @@ environment.sh
 dist/
 .venv-build/
 opca.egg-info/
+CLAUDE.md

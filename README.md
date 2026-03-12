@@ -7,7 +7,7 @@ client profiles from 1Password-backed templates.
 
 - **Minimal dependencies**: Python 3.9+, `cryptography`, and the 1Password CLI (`op`)
 - **No sensitive data written to disk**
-- **CLI-first workflow**
+- **CLI-first workflow** with an optional **interactive TUI** (terminal UI)
 
 ---
 
@@ -26,6 +26,9 @@ pip install opca
 
 # install with s3 publishing support
 pip install 'opca[s3]'
+
+# install with interactive TUI
+pip install 'opca[tui]'
 ```
 
 ### Install from source
@@ -37,6 +40,7 @@ pip install .
 # optional extras
 pip install .[dev]   # tests, linters, mypy, build tools
 pip install .[s3]    # adds S3 publishing support via boto3
+pip install .[tui]   # interactive terminal UI via Textual
 ```
 
 ### AWS Authentication
@@ -217,18 +221,73 @@ Creates new items like VPN_john.smith in 1Password.
 
 ---
 
+## 🖥️ Terminal UI (TUI)
+
+OPCA includes an optional interactive terminal interface built with [Textual](https://textual.textualize.io/).
+It provides the same functionality as the CLI in a navigable, form-driven interface.
+
+### Launch
+
+```shell
+# requires: pip install opca[tui]
+opca -a <acct> -v CA-Test tui
+```
+
+### Features
+
+- **Sidebar navigation** — switch between CA, Certificates, CRL, CSR, DKIM, OpenVPN, and Database screens using the sidebar or keys 1–7
+- **Certificate management** — create, view, renew, revoke, and export certificates with DataTable listing and filter support (All / Valid / Expiring / Expired / Revoked)
+- **CA operations** — view CA info, initialize a new CA, export the CA certificate
+- **CRL management** — generate, view info, and export CRLs in PEM or DER format
+- **Database tools** — view and set config values, export SQL, rebuild the database
+- **CSR, DKIM, OpenVPN** — create/import CSRs, manage DKIM keys, generate OpenVPN profiles
+- **PKCS#12 export** — export certificates in PKCS#12 format with password protection
+
+All long-running 1Password operations run in background workers so the UI stays responsive.
+
+---
+
 ## 🧪 Testing
 
 ### Unit Tests
 
+Run the full unit test suite (no external dependencies required):
+
 ```shell
+pip install .[dev]
 pytest
 ```
 
-### End-to-End (real vault)
+### End-to-End Tests (real 1Password vault)
+
+E2E tests create a temporary vault, exercise the full CLI and TUI workflows against a
+real 1Password account, and clean up afterwards. They require:
+
+- The 1Password CLI (`op`) signed in
+- The `OP_ACCOUNT` environment variable set to your 1Password account
 
 ```shell
+# run all e2e tests (CA init → certs → CRL → OpenVPN → TUI)
 OP_ACCOUNT=<acct> pytest -m e2e
+
+# run only the TUI e2e tests
+OP_ACCOUNT=<acct> pytest tests/e2e/test_60_tui.py -v
+
+# run only the CLI e2e tests
+OP_ACCOUNT=<acct> pytest tests/e2e/ -k "not tui" -v
+```
+
+E2E tests use `@pytest.mark.order()` to run in sequence. The TUI tests (order 60+)
+expect the vault to already contain a CA and certificates from earlier tests (order 10–50).
+Running the full suite ensures correct ordering.
+
+### TUI Unit Tests
+
+The TUI has its own unit tests using Textual's headless Pilot framework (no 1Password required):
+
+```shell
+pip install .[tui,dev]
+pytest tests/unit/test_tui.py -v
 ```
 
 ---
@@ -239,11 +298,18 @@ src/opca/
   cli.py                      # CLI entrypoint
   __main__.py                 # allows `python -m opca`
   constants.py
-  commands/                   # subcommands (ca, cert, crl, database, openvpn)
+  commands/                   # subcommands (ca, cert, crl, database, openvpn, tui)
   models/
   services/                   # 1Password, crypto, storage, etc.
   utils/                      # formatting, IO, crypto helpers
   storage/                    # static or template data
+  tui/                        # interactive terminal UI (optional, requires textual)
+    app.py                    # main Textual app
+    context.py                # bridges TUI to existing services
+    workers.py                # async worker helpers
+    css/app.tcss              # stylesheet
+    screens/                  # connect, dashboard, ca, cert_list, crl, etc.
+    widgets/                  # status_bar, log_panel
 ```
 
 ---

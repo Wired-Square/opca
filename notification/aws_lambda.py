@@ -58,13 +58,16 @@ def find_expiring_certificates(certificates, days):
     delta = timedelta(days)
     msg = ''
 
-    for serial, cn, expiry_str in certificates:
+    for row in certificates:
+        serial, cn, expiry_str = row[0], row[1], row[2]
+        issuer = row[3] if len(row) > 3 else None
         expiry_date = datetime.strptime(expiry_str, "%Y%m%d%H%M%SZ").replace(tzinfo=timezone.utc)
-        
+
         if now <= expiry_date <= now + delta:
             expiring_certs['expiring'] = True
             expiring_certs['certs'][serial] = {'cn': cn, 'expiry': expiry_str}
-            msg += f'    [{serial}] {cn} - Expiries in {timestamp_until(expiry_date)['friendly']}\n'
+            prefix = f'[EXT:{issuer}] ' if issuer else ''
+            msg += f'    [{serial}] {prefix}{cn} - Expiries in {timestamp_until(expiry_date)['friendly']}\n'
 
     expiring_certs['msg'] = msg
 
@@ -123,7 +126,7 @@ def run_tests(ca_cert_data, crl_data, db_data):
 
     cadb_file_age = timestamp_diff(db_data['last_modified'])
     cadb_query = """
-        SELECT serial, cn, expiry_date
+        SELECT serial, cn, expiry_date, issuer
         FROM certificate_authority
         WHERE revocation_date IS NULL
     """
