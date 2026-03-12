@@ -432,7 +432,7 @@ class CertificateBundle:
 
         if self.private_key is None:
             # No private key, we only care about validity
-            return self.certificate.not_valid_before <= current_time <= self.certificate.not_valid_after
+            return not_valid_before <= current_time <= not_valid_after
 
         if self.private_key.public_key() != self.certificate.public_key():
             # The private key does not match the certificate

@@ -156,32 +156,44 @@ class CertificateAuthority:
 
         return False
 
-    def format_db_item(self, certificate: x509.Certificate, item_title: Optional[str] = None) -> dict:
+    def format_db_item(self, certificate: x509.Certificate, item_title: Optional[str] = None,
+                       issuer: Optional[str] = None, issuer_subject: Optional[str] = None) -> dict:
         """
         Format a certificate db item from a certificate
 
         Args:
             certificate: cryptography.hazmat.bindings._rust.x509.Certificate
             item_title (str): The storage title of the certificate bundle
+            issuer (str): The issuer CN for external certificates
+            issuer_subject (str): The full issuer DN for external certificates
         """
 
         expired = datetime.now(timezone.utc) > certificate.not_valid_after_utc
+        status = 'Expired' if expired else 'Valid'
+        cn = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
 
-        if expired:
-            status = 'Expired'
-        else:
-            status = 'Valid'
+        if issuer is not None:
+            # External certificate — goes into external_certificate table
+            return {
+                'serial': certificate.serial_number,
+                'cn': cn,
+                'title': f'EXT_{item_title or cn}',
+                'status': status,
+                'expiry_date': format_datetime(certificate.not_valid_after_utc),
+                'subject': certificate.subject.rfc4514_string(),
+                'issuer': issuer,
+                'issuer_subject': issuer_subject or issuer,
+                'import_date': format_datetime(datetime.now(timezone.utc)),
+            }
 
-        cert_db_item = {
+        return {
             'serial': certificate.serial_number,
-            'cn': certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value,
+            'cn': cn,
             'title': item_title,
             'status': status,
             'expiry_date': format_datetime(certificate.not_valid_after_utc),
-            'subject': certificate.subject.rfc4514_string()
+            'subject': certificate.subject.rfc4514_string(),
         }
-
-        return cert_db_item
 
     # ----------------
     # Read methods
@@ -309,7 +321,13 @@ class CertificateAuthority:
             "last_update": crl_x509.last_update_utc,
             "next_update": crl_x509.next_update_utc,
             "expired": crl_x509.next_update_utc < datetime.now(timezone.utc),
-            "revoked": list(crl_x509),
+            "revoked": [
+                {
+                    "serial": revoked.serial_number,
+                    "date": revoked.revocation_date_utc,
+                }
+                for revoked in crl_x509
+            ],
         }
         try:
             crl_info["crl_number"] = crl_x509.extensions.get_extension_for_oid(
@@ -991,12 +1009,15 @@ class CertificateAuthority:
 
         return result
 
-    def store_certbundle(self, certbundle):
+    def store_certbundle(self, certbundle, issuer: Optional[str] = None,
+                         issuer_subject: Optional[str] = None):
         """
         Store a certificate bundle into 1Password
 
         Args:
             certbundle (CertificateBundle): The certificate to store
+            issuer (str): The issuer CN for external certificates
+            issuer_subject (str): The full issuer DN for external certificates
 
         Returns:
             subprocess.CompletedProcess: Output from 1Password CLI
@@ -1007,15 +1028,28 @@ class CertificateAuthority:
 
         item_title = certbundle.get_title()
         item_serial = certbundle.certificate.serial_number
+        is_external = issuer is not None
 
         if not certbundle.is_valid():
             raise InvalidCertificateError("Certificate Bundle is not valid.")
 
-        if self.ca_database.query_cert(cert_info={"title": item_title}, valid_only=True) is not None:
-            raise DuplicateCertificateError("Certificate with a duplicate name exists.")
+        # Prefix external cert titles with EXT_ to avoid namespace collisions
+        if is_external:
+            op_title = f"EXT_{item_title}"
+        else:
+            op_title = item_title
 
-        if self.ca_database.query_cert(cert_info={"serial": item_serial}, valid_only=True) is not None:
-            raise DuplicateCertificateError("Certificate with a duplicate serial number exists.")
+        # Duplicate checks against the appropriate table
+        if is_external:
+            if self.ca_database.query_external_cert(cert_info={"title": op_title}, valid_only=True) is not None:
+                raise DuplicateCertificateError("External certificate with a duplicate name exists.")
+            if self.ca_database.query_external_cert(cert_info={"serial": item_serial}, valid_only=True) is not None:
+                raise DuplicateCertificateError("External certificate with a duplicate serial number exists.")
+        else:
+            if self.ca_database.query_cert(cert_info={"title": op_title}, valid_only=True) is not None:
+                raise DuplicateCertificateError("Certificate with a duplicate name exists.")
+            if self.ca_database.query_cert(cert_info={"serial": item_serial}, valid_only=True) is not None:
+                raise DuplicateCertificateError("Certificate with a duplicate serial number exists.")
 
         attributes = [f'{self.op_config["cert_type_item"]}=' + \
                             f'{certbundle.get_type()}',
@@ -1023,8 +1057,6 @@ class CertificateAuthority:
                             f'{certbundle.get_certificate_attrib("cn")}',
                         f'{self.op_config["subject_item"]}=' + \
                             f'{certbundle.get_certificate_attrib("subject")}',
-                        f'{self.op_config["key_item"]}=' + \
-                            f'{certbundle.get_private_key()}',
                         f'{self.op_config["cert_item"]}=' + \
                             f'{certbundle.get_certificate()}',
                         f'{self.op_config["start_date_item"]}=' + \
@@ -1037,13 +1069,26 @@ class CertificateAuthority:
                             f'{certbundle.get_csr() or ""}'
         ]
 
+        if certbundle.private_key is not None:
+            attributes.append(f'{self.op_config["key_item"]}={certbundle.get_private_key()}')
+
         result = self.one_password.store_item(action='create',
-                                    item_title=item_title,
+                                    item_title=op_title,
                                     attributes=attributes)
 
-        if self.ca_database.add_cert(self.format_db_item(certificate=certbundle.certificate,
-                                                         item_title=item_title)):
-            self.store_ca_database()
+        db_item = self.format_db_item(
+            certificate=certbundle.certificate,
+            item_title=item_title,
+            issuer=issuer,
+            issuer_subject=issuer_subject,
+        )
+
+        if is_external:
+            if self.ca_database.add_external_cert(db_item):
+                self.store_ca_database()
+        else:
+            if self.ca_database.add_cert(db_item):
+                self.store_ca_database()
 
         return result
 

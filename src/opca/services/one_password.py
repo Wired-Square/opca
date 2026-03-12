@@ -257,6 +257,11 @@ class Op:
 
         return self._checked(cmd, input_text=str_in)
 
+    def vault_list(self, output_format: str = "json") -> subprocess.CompletedProcess:
+        """ List all accessible 1Password vaults """
+
+        return self._checked([self.bin, 'vault', 'list', f'--format={output_format}'])
+
     def whoami(self) -> subprocess.CompletedProcess:
         """ Return the current 1Password CLI user """
 
