@@ -88,7 +88,7 @@ class Op:
 
     def _checked(self, args: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess:
         """ Map common CLI failures to OPError subsclesses """
-        result = _run_command(args, str_in=input_text)
+        result = _run_command(args + self._account_args(), str_in=input_text)
         if result.returncode == 0:
             return result
         _raise_mapped_error(result)
@@ -155,7 +155,7 @@ class Op:
     def inject_item(self, template: str, env_vars: Optional[dict]) -> subprocess.CompletedProcess:
         """ Fill out a template from data in 1Password """
 
-        res = _run_command([self.bin, 'inject'], env_vars=env_vars, str_in=template)
+        res = _run_command([self.bin, 'inject'] + self._account_args(), env_vars=env_vars, str_in=template)
 
         if res.returncode != 0:
             _raise_mapped_error(res)
@@ -165,7 +165,7 @@ class Op:
     def item_exists(self, item_title: str) -> bool:
         """ Checks to see if an item exists in 1Password """
 
-        result = _run_command([self.bin, "item", "get", item_title, f"--vault={self.vault}", "--format=json"])
+        result = _run_command([self.bin, "item", "get", item_title, f"--vault={self.vault}", "--format=json"] + self._account_args())
 
         return bool(result.returncode == 0)
 
