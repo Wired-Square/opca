@@ -27,11 +27,14 @@ class CertificateAuthorityDB:
 
     Schema versions:
     - v1: Initial schema with config and certificate_authority tables
-    - v2: Added 'ou' (organizational unit) field
+    - v2: Added 'ou' (organisational unit) field
     - v3: Added storage location fields (ca_public_store, ca_private_store, ca_backup_store)
+    - v4: Added issuer field for external certificate tracking
+    - v5: Added csr table for tracking certificate signing requests
+    - v6: Added external_certificate table, migrated external certs out of certificate_authority
     """
 
-    _default_schema_version: int = 3
+    _default_schema_version: int = 6
 
     @property
     def default_schema_version(self):
@@ -49,6 +52,9 @@ class CertificateAuthorityDB:
         self.certs_expires_soon: Set[str] = set()
         self.certs_revoked: Set[str] = set()
         self.certs_valid: Set[str] = set()
+        self.ext_certs_expired: Set[str] = set()
+        self.ext_certs_expires_soon: Set[str] = set()
+        self.ext_certs_valid: Set[str] = set()
         self.conn = sqlite3.connect(':memory:')
         self.config_attrs: Tuple[str, ...] = (
             "next_serial",
@@ -76,6 +82,8 @@ class CertificateAuthorityDB:
             # Build a shiny new DB from config
             self.create_config_table(config or {})
             self.create_ca_table()
+            self.create_csr_table()
+            self.create_external_cert_table()
 
         self.create_database_index()
 
@@ -97,6 +105,47 @@ class CertificateAuthorityDB:
                 expiry_date TEXT,
                 revocation_date TEXT,
                 subject TEXT
+            )
+            """
+        )
+        self.conn.commit()
+        cursor.close()
+
+    def create_csr_table(self) -> None:
+        """ Create a table to track certificate signing requests """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS csr (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cn TEXT,
+                title TEXT,
+                csr_type TEXT,
+                email TEXT,
+                subject TEXT,
+                status TEXT,
+                created_date TEXT
+            )
+            """
+        )
+        self.conn.commit()
+        cursor.close()
+
+    def create_external_cert_table(self) -> None:
+        """ Create a table to track external (third-party signed) certificates """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS external_certificate (
+                serial TEXT PRIMARY KEY,
+                cn TEXT,
+                title TEXT,
+                status TEXT,
+                expiry_date TEXT,
+                subject TEXT,
+                issuer TEXT,
+                issuer_subject TEXT,
+                import_date TEXT
             )
             """
         )
@@ -175,6 +224,10 @@ class CertificateAuthorityDB:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ca_cn ON certificate_authority (cn)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ca_title ON certificate_authority (title)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ca_status ON certificate_authority (status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_csr_cn ON csr (cn)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_csr_status ON csr (status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ext_cn ON external_certificate (cn)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ext_status ON external_certificate (status)")
             self.conn.commit()
         finally:
             cursor.close()
@@ -214,6 +267,48 @@ class CertificateAuthorityDB:
                 cursor.execute('UPDATE config SET schema_version=3 WHERE id=1;')
                 self.conn.commit()
                 schema_version = 3
+                step["ok"] = True
+                info["steps"].append(step)
+
+            if schema_version == 3:
+                step = {"to": 4, "ok": False}
+                cursor.execute('ALTER TABLE certificate_authority ADD COLUMN issuer TEXT;')
+                cursor.execute('UPDATE config SET schema_version=4 WHERE id=1;')
+                self.conn.commit()
+                schema_version = 4
+                step["ok"] = True
+                info["steps"].append(step)
+
+            if schema_version == 4:
+                step = {"to": 5, "ok": False}
+                self.create_csr_table()
+                cursor.execute('UPDATE config SET schema_version=5 WHERE id=1;')
+                self.conn.commit()
+                schema_version = 5
+                step["ok"] = True
+                info["steps"].append(step)
+
+            if schema_version == 5:
+                step = {"to": 6, "ok": False}
+                self.create_external_cert_table()
+                # Migrate external certs (those with issuer set) to the new table
+                import_ts = now_utc_str("openssl")
+                cursor.execute(
+                    """
+                    INSERT INTO external_certificate
+                        (serial, cn, title, status, expiry_date, subject, issuer, issuer_subject, import_date)
+                    SELECT serial, cn, 'EXT_' || cn, status, expiry_date, subject, issuer, issuer, ?
+                    FROM certificate_authority
+                    WHERE issuer IS NOT NULL
+                    """,
+                    (import_ts,),
+                )
+                cursor.execute('DELETE FROM certificate_authority WHERE issuer IS NOT NULL;')
+                # Drop the now-unused issuer column from certificate_authority
+                cursor.execute('ALTER TABLE certificate_authority DROP COLUMN issuer;')
+                cursor.execute('UPDATE config SET schema_version=6 WHERE id=1;')
+                self.conn.commit()
+                schema_version = 6
                 step["ok"] = True
                 info["steps"].append(step)
 
@@ -317,6 +412,111 @@ class CertificateAuthorityDB:
             raise CADatabaseError(f"Error updating config: {sqlite_error}") from sqlite_error
         finally:
             cursor.close()
+
+    # --------------------------
+    # External certificate CRUD
+    # --------------------------
+
+    def add_external_cert(self, cert_db_item: Dict[str, Any]) -> bool:
+        """Add an external certificate record to the database."""
+        cert_db_item["serial"] = str(cert_db_item["serial"])
+        cursor = self.conn.cursor()
+
+        columns = ", ".join(cert_db_item.keys())
+        placeholders = ", ".join(["?"] * len(cert_db_item))
+        sql = f"INSERT INTO external_certificate ({columns}) VALUES ({placeholders})"
+
+        try:
+            cursor.execute(sql, tuple(cert_db_item.values()))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite external cert insert error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    def update_external_cert(self, cert_db_item: Dict[str, Any]) -> bool:
+        """Update an existing external certificate record. Must include 'serial'."""
+        if "serial" not in cert_db_item:
+            raise ValueError("The 'serial' key must be provided to update an external certificate.")
+
+        item = dict(cert_db_item)
+        cursor = self.conn.cursor()
+        serial_number = item.pop('serial')
+
+        columns = ', '.join([f"{key} = ?" for key in item.keys()])
+        sql = f"UPDATE external_certificate SET {columns} WHERE serial = ?"
+
+        try:
+            cursor.execute(sql, tuple(item.values()) + (serial_number,))
+            self.conn.commit()
+            if cursor.rowcount == 0:
+                raise CADatabaseError(f"No external certificate found with serial number {serial_number}.")
+            return True
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite external cert update error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    def query_external_cert(self, cert_info: Dict[str, str], valid_only: bool = False) -> Optional[Dict[str, Any]]:
+        """Search for an external certificate by serial, cn, or title."""
+        cursor = self.conn.cursor()
+
+        where_conditions: List[str] = []
+        values: List[str] = []
+
+        if 'serial' in cert_info:
+            where_conditions.append("serial=?")
+            values.append(cert_info["serial"])
+        elif 'title' in cert_info:
+            where_conditions.append("title=?")
+            values.append(cert_info["title"])
+        elif 'cn' in cert_info:
+            where_conditions.append("cn=?")
+            values.append(cert_info["cn"])
+        else:
+            raise ValueError("Either serial, title or cn must be provided.")
+
+        if valid_only:
+            where_conditions.append('status="Valid"')
+
+        where_clause = " AND ".join(where_conditions)
+        sql = f"SELECT * FROM external_certificate WHERE {where_clause}"
+
+        cursor.execute(sql, tuple(values))
+        row = cursor.fetchone()
+
+        if row:
+            columns = [desc[0] for desc in cursor.description]
+            result = dict(zip(columns, row))
+            cursor.close()
+            return result
+
+        cursor.close()
+        return None
+
+    def query_all_external_certs(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return all external certificate records, optionally filtered by status."""
+        cursor = self.conn.cursor()
+
+        if status:
+            cursor.execute("SELECT * FROM external_certificate WHERE status = ? ORDER BY serial", (status,))
+        else:
+            cursor.execute("SELECT * FROM external_certificate ORDER BY serial")
+
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        cursor.close()
+
+        return [dict(zip(columns, row)) for row in rows]
+
+    def count_external_certs(self) -> int:
+        """Count the number of external certificates in the database."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM external_certificate")
+        count = cursor.fetchone()[0]
+        cursor.close()
+        return count
 
     # --------------------------
     # Queries / utilities
@@ -555,6 +755,9 @@ class CertificateAuthorityDB:
         self.certs_expires_soon = set()
         self.certs_revoked = set()
         self.certs_valid = set()
+        self.ext_certs_expired = set()
+        self.ext_certs_expires_soon = set()
+        self.ext_certs_valid = set()
         expiry_warning_days = 30
         try:
             cfg = self.get_config_attributes(attrs=("crl_days",))
@@ -574,6 +777,10 @@ class CertificateAuthorityDB:
 
         for cert in all_cert_dicts:
             cert_changed = False
+
+            if not cert.get("expiry_date"):
+                # Skip records with missing or empty expiry dates
+                continue
 
             expiry_date = parse_datetime(cert["expiry_date"], "openssl")
             expired = now_utc() > expiry_date
@@ -612,7 +819,148 @@ class CertificateAuthorityDB:
             if cert_changed:
                 self.update_cert(cert_db_item=cert)
 
+        # Process external certificates (no revocation support)
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT * FROM external_certificate")
+            ext_certs = cursor.fetchall()
+            if ext_certs:
+                ext_columns = [desc[0] for desc in cursor.description]
+                for row in ext_certs:
+                    ext = dict(zip(ext_columns, row))
+                    ext_changed = False
+
+                    if not ext.get("expiry_date"):
+                        continue
+
+                    expiry_date = parse_datetime(ext["expiry_date"], "openssl")
+                    expired = now_utc() > expiry_date
+                    expires_soon = now_utc_plus(days=expiry_warning_days) > expiry_date
+
+                    if expired:
+                        if ext["status"] != "Expired":
+                            ext_changed = True
+                            db_changed = True
+                            ext["status"] = "Expired"
+                        self.ext_certs_expired.add(ext["serial"])
+                    elif expires_soon:
+                        self.ext_certs_expires_soon.add(ext["serial"])
+                    else:
+                        self.ext_certs_valid.add(ext["serial"])
+
+                    if ext_changed:
+                        self.update_external_cert(cert_db_item=ext)
+        finally:
+            cursor.close()
+
         return db_changed
+
+    # --------------------------
+    # CSR CRUD helpers
+    # --------------------------
+
+    def add_csr(self, csr_item: Dict[str, Any]) -> bool:
+        """
+        Add a CSR record to the database.
+
+        Args:
+            csr_item: Dictionary with keys: cn, title, csr_type, email, subject, status, created_date
+        """
+        cursor = self.conn.cursor()
+
+        columns = ", ".join(csr_item.keys())
+        placeholders = ", ".join(["?"] * len(csr_item))
+        sql = f"INSERT INTO csr ({columns}) VALUES ({placeholders})"
+
+        try:
+            cursor.execute(sql, tuple(csr_item.values()))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite CSR insert error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    def update_csr(self, csr_item: Dict[str, Any]) -> bool:
+        """
+        Update an existing CSR record, identified by 'cn' or 'id'.
+
+        Args:
+            csr_item: Dictionary of fields to update. Must include 'cn' or 'id'.
+        """
+        item = dict(csr_item)
+        cursor = self.conn.cursor()
+
+        if "id" in item:
+            where_col = "id"
+            where_val = item.pop("id")
+        elif "cn" in item:
+            where_col = "cn"
+            where_val = item.pop("cn")
+        else:
+            raise ValueError("Either 'id' or 'cn' must be provided to update a CSR.")
+
+        columns = ", ".join([f"{key} = ?" for key in item.keys()])
+        sql = f"UPDATE csr SET {columns} WHERE {where_col} = ?"
+
+        try:
+            cursor.execute(sql, tuple(item.values()) + (where_val,))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite CSR update error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    def query_csr(self, csr_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Search for a CSR by cn or id.
+
+        Args:
+            csr_info: Dictionary with 'cn' or 'id' key
+        """
+        cursor = self.conn.cursor()
+
+        if "id" in csr_info:
+            sql = "SELECT * FROM csr WHERE id = ?"
+            values = (csr_info["id"],)
+        elif "cn" in csr_info:
+            sql = "SELECT * FROM csr WHERE cn = ?"
+            values = (csr_info["cn"],)
+        else:
+            raise ValueError("Either 'id' or 'cn' must be provided.")
+
+        cursor.execute(sql, values)
+        row = cursor.fetchone()
+
+        if row:
+            columns = [desc[0] for desc in cursor.description]
+            result = dict(zip(columns, row))
+            cursor.close()
+            return result
+
+        cursor.close()
+        return None
+
+    def query_all_csrs(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Return all CSR records, optionally filtered by status.
+
+        Args:
+            status: Optional status filter ('Pending', 'Signed')
+        """
+        cursor = self.conn.cursor()
+
+        if status:
+            cursor.execute("SELECT * FROM csr WHERE status = ? ORDER BY id", (status,))
+        else:
+            cursor.execute("SELECT * FROM csr ORDER BY id")
+
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        cursor.close()
+
+        return [dict(zip(columns, row)) for row in rows]
 
     def close(self) -> None:
         """ Close the database connection """

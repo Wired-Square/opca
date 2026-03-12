@@ -25,7 +25,7 @@ class TestDatabaseInitialization:
         db = CertificateAuthorityDB(config)
 
         assert db.conn is not None
-        assert db.default_schema_version == 3
+        assert db.default_schema_version == 6
 
     def test_init_creates_config_table(self):
         """Should create and populate config table."""
@@ -52,6 +52,16 @@ class TestDatabaseInitialization:
 
         assert result is not None
 
+    def test_init_creates_external_cert_table(self):
+        """Should create external_certificate table."""
+        db = CertificateAuthorityDB({})
+
+        cursor = db.conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='external_certificate'")
+        result = cursor.fetchone()
+
+        assert result is not None
+
     def test_init_creates_indexes(self):
         """Should create database indexes."""
         db = CertificateAuthorityDB({})
@@ -63,13 +73,15 @@ class TestDatabaseInitialization:
         assert "idx_ca_cn" in indexes
         assert "idx_ca_title" in indexes
         assert "idx_ca_status" in indexes
+        assert "idx_ext_cn" in indexes
+        assert "idx_ext_status" in indexes
 
     def test_init_sets_schema_version(self):
         """Should set schema version to current default."""
         db = CertificateAuthorityDB({})
         config = db.get_config_attributes(attrs=("schema_version",))
 
-        assert config["schema_version"] == 3
+        assert config["schema_version"] == 6
 
 
 class TestConfigOperations:
@@ -588,7 +600,7 @@ class TestSchemaMigration:
 
         # Verify current schema is v3
         config = db.get_config_attributes(attrs=("schema_version",))
-        assert config["schema_version"] == 3
+        assert config["schema_version"] == 6
 
         # Verify import_database method exists and handles schema versions
         import inspect
@@ -608,7 +620,361 @@ class TestSchemaMigration:
         db2 = CertificateAuthorityDB(data=exported)
 
         config = db2.get_config_attributes(attrs=("schema_version",))
-        assert config["schema_version"] == 3
+        assert config["schema_version"] == 6
+
+
+class TestExternalCertificateOperations:
+    """Tests for external certificate CRUD operations."""
+
+    def _make_ext_cert(self, serial="500", cn="ext.example.com", **overrides):
+        item = {
+            "serial": serial,
+            "cn": cn,
+            "title": f"EXT_{cn}",
+            "status": "Valid",
+            "expiry_date": "20261231235959Z",
+            "subject": f"CN={cn}",
+            "issuer": "Let's Encrypt",
+            "issuer_subject": "CN=R3,O=Let's Encrypt,C=US",
+            "import_date": "20260101120000Z",
+        }
+        item.update(overrides)
+        return item
+
+    def test_add_external_cert(self):
+        """Should add external certificate to database."""
+        db = CertificateAuthorityDB({})
+        success = db.add_external_cert(self._make_ext_cert())
+        assert success is True
+
+    def test_add_external_cert_stores_string_serial(self):
+        """Should store serial as string."""
+        db = CertificateAuthorityDB({})
+        db.add_external_cert(self._make_ext_cert(serial=500))
+        result = db.query_external_cert({"serial": "500"}, valid_only=False)
+        assert result["serial"] == "500"
+
+    def test_query_external_cert_by_serial(self):
+        """Should query external certificate by serial."""
+        db = CertificateAuthorityDB({})
+        db.add_external_cert(self._make_ext_cert())
+        result = db.query_external_cert({"serial": "500"}, valid_only=False)
+        assert result["cn"] == "ext.example.com"
+        assert result["issuer"] == "Let's Encrypt"
+        assert result["issuer_subject"] == "CN=R3,O=Let's Encrypt,C=US"
+        assert result["import_date"] == "20260101120000Z"
+
+    def test_query_external_cert_by_cn(self):
+        """Should query external certificate by CN."""
+        db = CertificateAuthorityDB({})
+        db.add_external_cert(self._make_ext_cert())
+        result = db.query_external_cert({"cn": "ext.example.com"}, valid_only=False)
+        assert result["serial"] == "500"
+
+    def test_query_external_cert_by_title(self):
+        """Should query external certificate by title."""
+        db = CertificateAuthorityDB({})
+        db.add_external_cert(self._make_ext_cert())
+        result = db.query_external_cert({"title": "EXT_ext.example.com"}, valid_only=False)
+        assert result["serial"] == "500"
+
+    def test_query_external_cert_valid_only(self):
+        """Should filter by valid status."""
+        db = CertificateAuthorityDB({})
+        db.add_external_cert(self._make_ext_cert(status="Expired"))
+        result = db.query_external_cert({"serial": "500"}, valid_only=True)
+        assert result is None
+
+    def test_query_external_cert_not_found(self):
+        """Should return None for non-existent external certificate."""
+        db = CertificateAuthorityDB({})
+        result = db.query_external_cert({"serial": "999"}, valid_only=False)
+        assert result is None
+
+    def test_update_external_cert(self):
+        """Should update existing external certificate."""
+        db = CertificateAuthorityDB({})
+        db.add_external_cert(self._make_ext_cert())
+
+        success = db.update_external_cert({"serial": "500", "status": "Expired"})
+        assert success is True
+
+        result = db.query_external_cert({"serial": "500"}, valid_only=False)
+        assert result["status"] == "Expired"
+
+    def test_update_external_cert_requires_serial(self):
+        """Should raise ValueError if serial is missing."""
+        db = CertificateAuthorityDB({})
+        with pytest.raises(ValueError, match="serial"):
+            db.update_external_cert({"cn": "test.com"})
+
+    def test_update_nonexistent_external_cert_raises_error(self):
+        """Should raise CADatabaseError for non-existent external certificate."""
+        db = CertificateAuthorityDB({})
+        with pytest.raises(CADatabaseError, match="No external certificate found"):
+            db.update_external_cert({"serial": "999", "status": "Expired"})
+
+    def test_query_all_external_certs(self):
+        """Should return all external certificates."""
+        db = CertificateAuthorityDB({})
+        db.add_external_cert(self._make_ext_cert(serial="1", cn="a.com"))
+        db.add_external_cert(self._make_ext_cert(serial="2", cn="b.com"))
+
+        results = db.query_all_external_certs()
+        assert len(results) == 2
+
+    def test_query_all_external_certs_filtered(self):
+        """Should filter external certificates by status."""
+        db = CertificateAuthorityDB({})
+        db.add_external_cert(self._make_ext_cert(serial="1", cn="a.com", status="Valid"))
+        db.add_external_cert(self._make_ext_cert(serial="2", cn="b.com", status="Expired"))
+
+        results = db.query_all_external_certs(status="Valid")
+        assert len(results) == 1
+        assert results[0]["cn"] == "a.com"
+
+    def test_count_external_certs(self):
+        """Should count external certificates."""
+        db = CertificateAuthorityDB({})
+        assert db.count_external_certs() == 0
+
+        db.add_external_cert(self._make_ext_cert(serial="1", cn="a.com"))
+        db.add_external_cert(self._make_ext_cert(serial="2", cn="b.com"))
+        assert db.count_external_certs() == 2
+
+
+class TestExternalCertProcessing:
+    """Tests for process_ca_database with external certificates."""
+
+    def test_process_categorises_valid_external_certs(self):
+        """Should categorise valid external certificates."""
+        db = CertificateAuthorityDB({})
+        future_date = (datetime.now(timezone.utc) + timedelta(days=100)).strftime("%Y%m%d%H%M%SZ")
+
+        db.add_external_cert({
+            "serial": "500",
+            "cn": "ext.com",
+            "title": "EXT_ext.com",
+            "status": "Valid",
+            "expiry_date": future_date,
+            "subject": "CN=ext.com",
+            "issuer": "External CA",
+            "issuer_subject": "CN=External CA",
+            "import_date": "20260101120000Z",
+        })
+
+        db.process_ca_database()
+
+        assert "500" in db.ext_certs_valid
+        assert "500" not in db.ext_certs_expired
+        assert "500" not in db.ext_certs_expires_soon
+
+    def test_process_categorises_expired_external_certs(self):
+        """Should identify expired external certificates."""
+        db = CertificateAuthorityDB({})
+
+        db.add_external_cert({
+            "serial": "500",
+            "cn": "ext.com",
+            "title": "EXT_ext.com",
+            "status": "Valid",
+            "expiry_date": "20200101000000Z",
+            "subject": "CN=ext.com",
+            "issuer": "External CA",
+            "issuer_subject": "CN=External CA",
+            "import_date": "20260101120000Z",
+        })
+
+        db.process_ca_database()
+
+        assert "500" in db.ext_certs_expired
+        assert "500" not in db.ext_certs_valid
+
+    def test_process_categorises_expiring_external_certs(self):
+        """Should identify external certificates expiring soon."""
+        db = CertificateAuthorityDB({})
+        expiry_date = (datetime.now(timezone.utc) + timedelta(days=15)).strftime("%Y%m%d%H%M%SZ")
+
+        db.add_external_cert({
+            "serial": "500",
+            "cn": "ext.com",
+            "title": "EXT_ext.com",
+            "status": "Valid",
+            "expiry_date": expiry_date,
+            "subject": "CN=ext.com",
+            "issuer": "External CA",
+            "issuer_subject": "CN=External CA",
+            "import_date": "20260101120000Z",
+        })
+
+        db.process_ca_database()
+
+        assert "500" in db.ext_certs_expires_soon
+        assert "500" not in db.ext_certs_valid
+        assert "500" not in db.ext_certs_expired
+
+    def test_external_certs_separate_from_local(self):
+        """External certs should not appear in local cert sets."""
+        db = CertificateAuthorityDB({})
+        future_date = (datetime.now(timezone.utc) + timedelta(days=100)).strftime("%Y%m%d%H%M%SZ")
+
+        db.add_cert({
+            "serial": "1",
+            "cn": "local.com",
+            "title": "Local",
+            "status": "Valid",
+            "expiry_date": future_date,
+            "subject": "CN=local.com",
+        })
+        db.add_external_cert({
+            "serial": "500",
+            "cn": "ext.com",
+            "title": "EXT_ext.com",
+            "status": "Valid",
+            "expiry_date": future_date,
+            "subject": "CN=ext.com",
+            "issuer": "External CA",
+            "issuer_subject": "CN=External CA",
+            "import_date": "20260101120000Z",
+        })
+
+        db.process_ca_database()
+
+        assert "1" in db.certs_valid
+        assert "500" not in db.certs_valid
+        assert "500" in db.ext_certs_valid
+        assert "1" not in db.ext_certs_valid
+
+
+class TestSchemaMigrationV5ToV6:
+    """Tests for v5 to v6 schema migration."""
+
+    def _create_v5_database(self) -> str:
+        """Create a v5-schema database and return its SQL export."""
+        conn = sqlite3.connect(":memory:")
+        cursor = conn.cursor()
+
+        # Create v5 schema tables (config is a single-row table with columns)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS config (
+                id INTEGER PRIMARY KEY,
+                next_serial TEXT,
+                next_crl_serial TEXT,
+                org TEXT,
+                ou TEXT,
+                email TEXT,
+                city TEXT,
+                state TEXT,
+                country TEXT,
+                ca_url TEXT,
+                crl_url TEXT,
+                days INTEGER,
+                crl_days INTEGER,
+                schema_version INTEGER,
+                ca_public_store TEXT,
+                ca_private_store TEXT,
+                ca_backup_store TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS certificate_authority (
+                serial TEXT PRIMARY KEY,
+                cn TEXT,
+                title TEXT,
+                status TEXT,
+                expiry_date TEXT,
+                subject TEXT,
+                revocation_date TEXT,
+                issuer TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS csr (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cn TEXT,
+                title TEXT,
+                csr_type TEXT,
+                email TEXT,
+                subject TEXT,
+                status TEXT,
+                created_date TEXT
+            )
+        """)
+
+        # Config (single row)
+        cursor.execute(
+            "INSERT INTO config (id, next_serial, next_crl_serial, days, crl_days, schema_version) "
+            "VALUES (1, '10', '1', 365, 30, 5)"
+        )
+
+        # Local cert
+        cursor.execute(
+            "INSERT INTO certificate_authority VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("1", "local.com", "local.com", "Valid", "20271231235959Z", "CN=local.com", None, None),
+        )
+        # External cert (has issuer)
+        cursor.execute(
+            "INSERT INTO certificate_authority VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("500", "ext.com", "ext.com", "Valid", "20271231235959Z", "CN=ext.com", None, "Let's Encrypt"),
+        )
+
+        conn.commit()
+
+        # Export as SQL
+        lines = []
+        for line in conn.iterdump():
+            lines.append(line)
+        conn.close()
+        return "\n".join(lines)
+
+    def test_migration_creates_external_cert_table(self):
+        """Migration should create external_certificate table."""
+        sql = self._create_v5_database()
+        db = CertificateAuthorityDB(data=sql)
+
+        cursor = db.conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='external_certificate'")
+        assert cursor.fetchone() is not None
+
+    def test_migration_moves_external_certs(self):
+        """Migration should move external certs to new table."""
+        sql = self._create_v5_database()
+        db = CertificateAuthorityDB(data=sql)
+
+        # External cert should be in new table
+        ext = db.query_external_cert({"serial": "500"}, valid_only=False)
+        assert ext is not None
+        assert ext["cn"] == "ext.com"
+        assert ext["issuer"] == "Let's Encrypt"
+
+        # External cert should be removed from certificate_authority
+        local_ext = db.query_cert({"serial": "500"}, valid_only=False)
+        assert local_ext is None
+
+    def test_migration_preserves_local_certs(self):
+        """Migration should keep local certs in certificate_authority."""
+        sql = self._create_v5_database()
+        db = CertificateAuthorityDB(data=sql)
+
+        local = db.query_cert({"serial": "1"}, valid_only=False)
+        assert local is not None
+        assert local["cn"] == "local.com"
+
+    def test_migration_prefixes_external_title(self):
+        """Migration should prefix external cert titles with EXT_."""
+        sql = self._create_v5_database()
+        db = CertificateAuthorityDB(data=sql)
+
+        ext = db.query_external_cert({"serial": "500"}, valid_only=False)
+        assert ext["title"] == "EXT_ext.com"
+
+    def test_migration_updates_schema_version(self):
+        """Migration should update schema version to 6."""
+        sql = self._create_v5_database()
+        db = CertificateAuthorityDB(data=sql)
+
+        config = db.get_config_attributes(attrs=("schema_version",))
+        assert config["schema_version"] == 6
 
 
 class TestDatabaseClose:
