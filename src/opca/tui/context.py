@@ -43,6 +43,16 @@ class TuiContext:
         except (CANotFoundError, CADatabaseError):
             self.ca = None
 
+    def disconnect(self) -> None:
+        """Tear down the 1Password connection and clear CA state."""
+        if self.ca is not None:
+            try:
+                self.ca.ca_database.conn.close()
+            except Exception:
+                pass
+            self.ca = None
+        self.op = None
+
     def reload_ca(self) -> None:
         """Reload CA from 1Password (e.g. after init/import)."""
         if self.op is None:

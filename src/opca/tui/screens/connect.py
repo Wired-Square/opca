@@ -14,6 +14,10 @@ class ConnectScreen(Screen):
 
     BINDINGS = [("escape", "app.quit", "Quit")]
 
+    def __init__(self, auto_connect: bool = True, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._auto_connect = auto_connect
+
     def compose(self) -> ComposeResult:
         with Vertical(id="connect-form"):
             yield Static(
@@ -38,8 +42,8 @@ class ConnectScreen(Screen):
 
     def on_mount(self) -> None:
         self.query_one("#connect-spinner").display = False
-        # If vault was provided via CLI, auto-connect
-        if self.app.tui_context.vault:
+        # If vault was provided via CLI, auto-connect (unless returning from logout)
+        if self._auto_connect and self.app.tui_context.vault:
             self._do_connect()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

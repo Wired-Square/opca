@@ -30,6 +30,7 @@ class Dashboard(Screen):
 
     BINDINGS = [
         ("q", "app.quit", "Quit"),
+        ("l", "app.logout", "Logout"),
         ("r", "refresh", "Refresh"),
         ("1", "nav(0)", "CA"),
         ("2", "nav(1)", "Certs"),

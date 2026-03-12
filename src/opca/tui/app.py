@@ -57,6 +57,12 @@ class OpcaTuiApp(App):
         from opca.tui.screens.connect import ConnectScreen
         self.push_screen(ConnectScreen())
 
+    def action_logout(self) -> None:
+        """Disconnect and return to the connect screen."""
+        from opca.tui.screens.connect import ConnectScreen
+        self.tui_context.disconnect()
+        self.switch_screen(ConnectScreen(auto_connect=False))
+
     def switch_to_dashboard(self) -> None:
         """Switch from connect screen to dashboard."""
         from opca.tui.screens.dashboard import Dashboard
