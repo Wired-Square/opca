@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Dict, Iterable, List
 
@@ -125,6 +126,11 @@ def handle_cert_export(app: App) -> int:
 
     elif fmt == "pkcs12":
         password = get_confirmed_password()
+        to_stdout = bool(getattr(app.args, "to_stdout", False))
+        outfile = getattr(app.args, "outfile", None)
+
+        if not to_stdout and not outfile:
+            error("PKCS#12 export requires --outfile or --to-stdout.", 1)
 
         try:
             p12_bytes = cert_bundle.export_pkcs12(
@@ -132,18 +138,21 @@ def handle_cert_export(app: App) -> int:
                 name=cert_cn,
                 include_chain=None,  # supply CA chain if/when available
             )
-            out_path = write_bytes(
-                app.args.outfile,
-                p12_bytes,
-                overwrite=False,
-                create_dirs=False,
-                atomic=True,
-                mode=0o600,
-            )
-            print(
-                f"Certificate and key exported as PKCS12 to "
-                f"{COLOUR_BRIGHT}{out_path}{COLOUR_RESET}"
-            )
+            if to_stdout:
+                print(base64.b64encode(p12_bytes).decode("ascii"))
+            else:
+                out_path = write_bytes(
+                    outfile,
+                    p12_bytes,
+                    overwrite=False,
+                    create_dirs=False,
+                    atomic=True,
+                    mode=0o600,
+                )
+                print(
+                    f"Certificate and key exported as PKCS12 to "
+                    f"{COLOUR_BRIGHT}{out_path}{COLOUR_RESET}"
+                )
         except ValueError as e:
             error(str(e), 1)
         return EXIT_OK
@@ -172,6 +181,11 @@ def handle_cert_info(app: App) -> int:
     db_row = app.ca.ca_database.query_cert(
         {"serial": cert_serial} if cert_serial else {"cn": cert_cn}
     )
+    # Fall through to external certificate table if not found locally
+    if db_row is None:
+        db_row = app.ca.ca_database.query_external_cert(
+            {"serial": cert_serial} if cert_serial else {"cn": cert_cn}
+        )
     # Fallbacks in case DB row is missing fields
     db_status = (db_row or {}).get("status", "Unknown")
     db_revocation_date = (db_row or {}).get("revocation_date")
@@ -208,11 +222,19 @@ def handle_cert_info(app: App) -> int:
     return EXIT_OK
 
 def handle_cert_import(app: App) -> int:
-    object_config: Dict[str, object] = {"type": "imported"}
+    is_external = getattr(app.args, "external", False)
+    cert_type = "external" if is_external else "imported"
+    object_config: Dict[str, object] = {"type": cert_type}
 
     title("Importing a Certificate Bundle from file", 3)
 
-    if getattr(app.args, "key_file", None):
+    if getattr(app.args, "key_file_data", None):
+        title("Private Key (inline data)", 9)
+        imported_private_key = app.args.key_file_data
+        print_result(bool(imported_private_key))
+        if imported_private_key:
+            object_config["private_key"] = imported_private_key
+    elif getattr(app.args, "key_file", None):
         title(f"Private Key {COLOUR_BRIGHT}{app.args.key_file}{COLOUR_RESET}", 9)
         imported_private_key = read_bytes(app.args.key_file)  # bytes
         print_result(bool(imported_private_key))
@@ -221,8 +243,13 @@ def handle_cert_import(app: App) -> int:
     else:
         title("Importing without Private Key", 8)
 
-    title(f"Certificate {COLOUR_BRIGHT}{app.args.cert_file}{COLOUR_RESET}", 9)
-    imported_certificate = read_bytes(app.args.cert_file)  # bytes
+    cert_file_data = getattr(app.args, "cert_file_data", None)
+    if cert_file_data:
+        title("Certificate (inline data)", 9)
+        imported_certificate = cert_file_data
+    else:
+        title(f"Certificate {COLOUR_BRIGHT}{app.args.cert_file}{COLOUR_RESET}", 9)
+        imported_certificate = read_bytes(app.args.cert_file)  # bytes
     print_result(bool(imported_certificate))
     if imported_certificate:
         object_config["certificate"] = imported_certificate
@@ -230,7 +257,7 @@ def handle_cert_import(app: App) -> int:
     item_title = getattr(app.args, "cn", None) or None
 
     cert_bundle = app.ca.import_certificate_bundle(
-        cert_type="imported",
+        cert_type=cert_type,
         config=object_config,
         item_title=item_title,
     )
@@ -240,25 +267,36 @@ def handle_cert_import(app: App) -> int:
 
     item_serial = cert_bundle.get_certificate_attrib("serial")
 
-    if app.ca.is_cert_valid(cert_bundle.certificate):
-        prior_serial = app.ca.ca_database.increment_serial(
-            serial_type="cert",
-            serial_number=item_serial,
-        )
-
-        if prior_serial < item_serial:
-            title(
-                "The next available serial number is "
-                f"[ {COLOUR_BRIGHT}{item_serial + 1}{COLOUR_RESET} ]",
-                8,
+    if is_external or app.ca.is_cert_valid(cert_bundle.certificate):
+        if not is_external:
+            prior_serial = app.ca.ca_database.increment_serial(
+                serial_type="cert",
+                serial_number=item_serial,
             )
+
+            if prior_serial < item_serial:
+                title(
+                    "The next available serial number is "
+                    f"[ {COLOUR_BRIGHT}{item_serial + 1}{COLOUR_RESET} ]",
+                    8,
+                )
+
+        issuer = None
+        issuer_subject = None
+        if is_external:
+            from cryptography.x509.oid import NameOID
+            issuer_attrs = cert_bundle.certificate.issuer.get_attributes_for_oid(
+                NameOID.COMMON_NAME
+            )
+            issuer = issuer_attrs[0].value if issuer_attrs else "Unknown"
+            issuer_subject = cert_bundle.certificate.issuer.rfc4514_string()
 
         title(
             "Storing certificate bundle for "
             f"{COLOUR_BRIGHT}{item_title}{COLOUR_RESET} in 1Password",
             9,
         )
-        result = app.ca.store_certbundle(cert_bundle)
+        result = app.ca.store_certbundle(cert_bundle, issuer=issuer, issuer_subject=issuer_subject)
         print_result(result.returncode == 0)
     else:
         error("Certificate is not signed by this Certificate Authority", 1)

@@ -71,7 +71,7 @@ def _add_export_subcommand(actions: argparse._SubParsersAction) -> argparse.Argu
     # PEM knobs
     parser.add_argument('--with-key', action='store_true', help='Include private key (PEM only)')
     parser.add_argument('--cert-only', action='store_true', help='Export certificate only (PEM only; default)')
-    parser.add_argument('--to-stdout', action='store_true', help='Write PEM to stdout')
+    parser.add_argument('--to-stdout', action='store_true', help='Write to stdout (base64 for PKCS#12)')
     parser.add_argument('--cert-out', metavar='FILE', help='Write certificate PEM to this file')
     parser.add_argument('--key-out', metavar='FILE', help='Write private key PEM to this file (requires --with-key)')
 
@@ -118,6 +118,9 @@ def _add_import_subcommand(actions: argparse._SubParsersAction) -> argparse.Argu
     parser.add_argument('-n', '--cn',
         required=False,
         help='x509 CN attribute for the 1Password Certificate Authority')
+    parser.add_argument('--external',
+        action='store_true',
+        help='Import an external certificate (not signed by this CA)')
 
     parser.set_defaults(handler=handle_cert_import)
 
