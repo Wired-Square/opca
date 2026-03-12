@@ -391,7 +391,7 @@ class CSRScreen(Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _do_sign(self) -> None:
-        file_input = self.query_one(FileInput)
+        file_input = self.query_one("#view-sign").query_one(FileInput)
         csr_content = file_input.get_content()
         csr_type = str(self.query_one("#sign-type-select", Select).value)
 
