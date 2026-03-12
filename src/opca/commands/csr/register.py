@@ -42,8 +42,8 @@ def _add_import_subcommand(actions: argparse._SubParsersAction) -> argparse.Argu
     parser = actions.add_parser("import",
         help="Import an externally signed certificate into an existing CSR entry")
     parser.add_argument("-n", "--cn",
-        required=True,
-        help="CN of the existing CSR entry in 1Password")
+        required=False, default=None,
+        help="CN override (extracted from certificate by default)")
     parser.add_argument("-c", "--cert-file",
         required=True,
         help="Path to the signed certificate file (PEM or DER)")

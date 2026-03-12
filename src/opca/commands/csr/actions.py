@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 
+logger = logging.getLogger(__name__)
+
 from opca.models import App
 from opca.constants import (
     DEFAULT_KEY_SIZE,
@@ -99,9 +101,50 @@ def handle_csr_import(app: App) -> int:
     from cryptography.hazmat.primitives.serialization import Encoding
     from cryptography.x509.oid import NameOID
 
-    cn = app.args.cn
-    cert_file = app.args.cert_file
+    cert_file = getattr(app.args, "cert_file", None)
+    logger.debug("cert_file=%s", cert_file)
+
+    # --- Parse the imported certificate ---
+    cert_file_data = getattr(app.args, "cert_file_data", None)
+    logger.debug("cert_file_data present: %s (%d bytes)",
+                 cert_file_data is not None,
+                 len(cert_file_data) if cert_file_data else 0)
+    if cert_file_data:
+        title("Reading certificate (inline data)", 9)
+        cert_data = cert_file_data
+    else:
+        title("Reading certificate file", 9)
+        cert_data = read_bytes(cert_file)
+    if not cert_data:
+        error(f"Could not read certificate from '{cert_file}'.", 1)
+
+    try:
+        certificate = x509.load_pem_x509_certificate(cert_data, default_backend())
+        logger.debug("Parsed certificate as PEM")
+    except Exception as pem_exc:
+        logger.debug("PEM parse failed: %s", pem_exc)
+        try:
+            certificate = x509.load_der_x509_certificate(cert_data, default_backend())
+            logger.debug("Parsed certificate as DER")
+        except Exception as der_exc:
+            logger.debug("DER parse failed: %s", der_exc)
+            error(f"Unable to parse '{cert_file}' as PEM or DER certificate.", 1)
+    print_result(True)
+
+    # --- Determine CN from certificate or --cn override ---
+    cn_override = getattr(app.args, "cn", None)
+    if cn_override:
+        cn = cn_override
+        logger.debug("Using CN override: %s", cn)
+    else:
+        cn_attrs = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if not cn_attrs:
+            error("No Common Name found in certificate subject. Use --cn to specify.", 1)
+        cn = cn_attrs[0].value
+        logger.debug("Extracted CN from certificate: %s", cn)
+
     op_title = f"CSR_{cn}"
+    logger.debug("Looking up 1Password item: %s", op_title)
 
     # --- Retrieve existing CSR item from 1Password ---
     title("Retrieving CSR from 1Password", 9)
@@ -128,26 +171,6 @@ def handle_csr_import(app: App) -> int:
         error(f"No CSR found in '{cn}'. Is this a CSR item?", 1)
 
     csr_type = item_fields.get('type', 'external')
-
-    # --- Parse the imported certificate ---
-    cert_file_data = getattr(app.args, "cert_file_data", None)
-    if cert_file_data:
-        title("Reading certificate (inline data)", 9)
-        cert_data = cert_file_data
-    else:
-        title("Reading certificate file", 9)
-        cert_data = read_bytes(cert_file)
-    if not cert_data:
-        error(f"Could not read certificate from '{cert_file}'.", 1)
-
-    try:
-        certificate = x509.load_pem_x509_certificate(cert_data, default_backend())
-    except Exception:
-        try:
-            certificate = x509.load_der_x509_certificate(cert_data, default_backend())
-        except Exception:
-            error(f"Unable to parse '{cert_file}' as PEM or DER certificate.", 1)
-    print_result(True)
 
     # --- Validate certificate against private key ---
     title("Validating certificate against private key", 9)
