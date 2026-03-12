@@ -30,6 +30,8 @@ def _add_generate_subcommand(actions: argparse._SubParsersAction) -> argparse.Ar
                         help="Generate a VPN profile (requires --template and either --cn or --file)")
     parser.add_argument("--server", action="store_true",
                         help="Generate a sample OpenVPN server object")
+    parser.add_argument("--setup", action="store_true",
+                        help="Smart setup: create OpenVPN item with template, DH, and TA key (skips existing)")
 
     # Profile options (only used when --profile is set)
     parser.add_argument("-d", "--dest", required=False,

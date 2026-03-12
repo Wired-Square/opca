@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -21,6 +22,85 @@ log = logging.getLogger(__name__)
 
 
 # -----------------------------------------
+# Helpers
+# -----------------------------------------
+def _get_openvpn_fields(app: App) -> dict[str, str]:
+    """Fetch the OpenVPN item and return {label: value} for all fields.
+
+    Returns an empty dict if the item does not exist.
+    """
+    openvpn_title = DEFAULT_OP_CONF["openvpn_title"]
+    if not app.op.item_exists(openvpn_title):
+        return {}
+    result = app.op.get_item(openvpn_title)
+    loaded = json.loads(result.stdout)
+    fields: dict[str, str] = {}
+    for field in loaded.get('fields', []):
+        label = field.get('label', '')
+        value = field.get('value', '')
+        if label:
+            fields[label] = value
+    return fields
+
+
+def _resolve_store_action(app: App) -> str:
+    """Return 'create' or 'edit' for the OpenVPN item."""
+    if app.op.item_exists(DEFAULT_OP_CONF["openvpn_title"]):
+        return 'edit'
+    return 'create'
+
+
+def _build_template_boilerplate(app: App, template_name: str) -> str:
+    """Build the op:// reference boilerplate for an OpenVPN client template."""
+    openvpn_title = DEFAULT_OP_CONF["openvpn_title"]
+    base_url = f'op://{app.args.vault}/{{}}'
+    client_url = base_url.format('$OPCA_USER/cn')
+    hostname_url = base_url.format(f'{openvpn_title}/server/hostname')
+    port_url = base_url.format(f'{openvpn_title}/server/port')
+    cipher_url = base_url.format(f'{openvpn_title}/server/cipher')
+    auth_url = base_url.format(f'{openvpn_title}/server/auth')
+    ca_cert_url = base_url.format((f'{DEFAULT_OP_CONF["ca_title"]}/'
+                                    f'{DEFAULT_OP_CONF["cert_item"]}'))
+    cert_url = base_url.format(f'$OPCA_USER/{DEFAULT_OP_CONF["cert_item"]}')
+    private_key_url = base_url.format(f'$OPCA_USER/{DEFAULT_OP_CONF["key_item"]}')
+    tls_auth_url = base_url.format((f'{openvpn_title}/'
+                                    f'{DEFAULT_OP_CONF["ta_item"].replace(".", "/")}'))
+
+    return f'''#
+# Client - {{{{ {client_url} }}}}
+#
+
+# Brought to you by Wired Square - www.wiredsquare.com
+
+client
+dev tun
+proto udp
+remote {{{{ {hostname_url} }}}} {{{{ {port_url} }}}}
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+cipher {{{{ {cipher_url} }}}}
+auth {{{{ {auth_url} }}}}
+verb 3
+key-direction 1
+mssfix 1300
+<ca>
+{{{{ {ca_cert_url} }}}}
+</ca>
+<cert>
+{{{{ {cert_url} }}}}
+</cert>
+<key>
+{{{{ {private_key_url} }}}}
+</key>
+<tls-auth>
+{{{{ {tls_auth_url} }}}}
+</tls-auth>
+'''
+
+
+# -----------------------------------------
 # Generate
 # -----------------------------------------
 def handle_generate(app: App) -> int:
@@ -31,11 +111,18 @@ def handle_generate(app: App) -> int:
         app.args.dh,
         app.args.ta_key,
         app.args.profile,
-        app.args.server]
+        app.args.server,
+        getattr(app.args, 'setup', False)]
     if not any(selected):
-        app.args._parser.error("nothing selected to generate; use one or more of: --dh, --ta-key, --profile, --server")
+        app.args._parser.error("nothing selected to generate; use one or more of: --dh, --ta-key, --profile, --server, --setup")
 
     return_code = EXIT_OK
+
+    if getattr(app.args, 'setup', False):
+        if not app.args.template:
+            app.args._parser.error("--setup requires --template")
+        return_code = max(return_code, handle_server_setup(app))
+        return return_code
 
     if app.args.dh:
         return_code = max(return_code, handle_dh_gen(app))
@@ -69,8 +156,9 @@ def handle_dh_gen(app: App) -> int:
                     f'{ DEFAULT_OP_CONF["dh_key_size_item"] }={ dh_keysize}'
                 ]
 
+    action = _resolve_store_action(app)
     result = app.op.store_item(item_title=DEFAULT_OP_CONF["openvpn_title"],
-                                        attributes=attributes)
+                                        attributes=attributes, action=action)
 
     print_result(result.returncode == 0)
 
@@ -98,8 +186,9 @@ def handle_ta_key_gen(app: App) -> int:
                     f'{DEFAULT_OP_CONF["ta_key_size_item"]}={ ta_keysize }'
                     ]
 
+    action = _resolve_store_action(app)
     result = app.op.store_item(item_title=DEFAULT_OP_CONF["openvpn_title"],
-                                        attributes=attributes)
+                                        attributes=attributes, action=action)
 
     print_result(result.returncode == 0)
 
@@ -183,70 +272,122 @@ def handle_profile_gen(app: App) -> int:
     return EXIT_OK
 
 def handle_server_gen(app: App) -> int:
-    openvpn_title = f'{ DEFAULT_OP_CONF["openvpn_title"] }'
+    """Legacy entry point — delegates to handle_server_setup."""
+    # Default template name to 'sample' for backwards compatibility
+    if not getattr(app.args, 'template', None):
+        app.args.template = 'sample'
+    return handle_server_setup(app)
 
-    title(f'Checking for existing OpenVPN object [ {COLOUR_BRIGHT}{openvpn_title}{COLOUR_RESET} ]', 9)
-    exists = app.op.item_exists(openvpn_title)
-    print_result(exists)
 
-    if exists:
+def handle_server_setup(app: App) -> int:
+    """Create or update the OpenVPN 1Password item with server config, DH, TA key, and template.
+
+    Only writes fields that do not already exist, preventing duplicates.
+    """
+    openvpn_title = DEFAULT_OP_CONF["openvpn_title"]
+    template_name = getattr(app.args, 'template', 'sample') or 'sample'
+
+    title(f'Checking existing OpenVPN object [ {COLOUR_BRIGHT}{openvpn_title}{COLOUR_RESET} ]', 9)
+    fields = _get_openvpn_fields(app)
+    item_exists = bool(fields)
+    print_result(item_exists)
+
+    attributes: list[str] = []
+
+    # Server defaults — only add if missing
+    if 'hostname' not in fields:
+        attributes.append('server.hostname[text]=vpn.domain.com.au')
+    if 'port' not in fields:
+        attributes.append('server.port[text]=1194')
+    if 'cipher' not in fields:
+        attributes.append('server.cipher[text]=aes-256-gcm')
+    if 'auth' not in fields:
+        attributes.append('server.auth[text]=sha256')
+
+    # Template — only add if this specific template doesn't exist
+    if template_name not in fields:
+        title(f'Adding template [ {COLOUR_BRIGHT}{template_name}{COLOUR_RESET} ]', 9)
+        boilerplate = _build_template_boilerplate(app, template_name)
+        attributes.append(f'template.{template_name}[text]={boilerplate}')
+        print_result(True)
+    else:
+        title(f'Template [ {COLOUR_BRIGHT}{template_name}{COLOUR_RESET} ] already exists', 9)
+        print_result(True)
+
+    # DH parameters — generate if missing
+    if 'dh_parameters' not in fields:
+        title('Generating DH parameters', 9)
+        dh_pem = generate_dh_params()
+        print_result(dh_pem)
+
+        title('Verifying DH parameters', 9)
+        dh_keysize = verify_dh_params(dh_pem.encode('utf-8'))
+        print_result(dh_keysize >= DEFAULT_KEY_SIZE['dh'])
+
+        attributes.append(f'{DEFAULT_OP_CONF["dh_item"]}={dh_pem}')
+        attributes.append(f'{DEFAULT_OP_CONF["dh_key_size_item"]}={dh_keysize}')
+    else:
+        title('DH parameters already exist', 9)
+        print_result(True)
+
+    # TA key — generate if missing
+    if 'static_key' not in fields:
+        title('Generating TLS Authentication Key', 9)
+        ta_pem = generate_ta_key()
+        print_result(ta_pem)
+
+        title('Verifying TLS Authentication Key', 9)
+        ta_keysize = verify_ta_key(ta_pem.encode('utf-8'))
+        if ta_keysize >= DEFAULT_KEY_SIZE['ta']:
+            print_result(True)
+        else:
+            print_result(False)
+            error('TLS Authentication Key is not suitable', 1)
+
+        attributes.append(f'{DEFAULT_OP_CONF["ta_item"]}={ta_pem}')
+        attributes.append(f'{DEFAULT_OP_CONF["ta_key_size_item"]}={ta_keysize}')
+    else:
+        title('TLS Authentication Key already exists', 9)
+        print_result(True)
+
+    if not attributes:
+        title('OpenVPN object is already fully configured', 9)
+        print_result(True)
         return EXIT_OK
 
-    title('Storing the sample OpenVPN configuration template', 9)
+    action = 'edit' if item_exists else 'create'
+    title(f'Storing OpenVPN configuration ({action})', 9)
+    result = app.op.store_item(
+        item_title=openvpn_title,
+        action=action,
+        attributes=attributes,
+    )
+    print_result(result.returncode == 0)
 
-    base_url = f'op://{app.args.vault}/{{}}'
-    client_url = base_url.format('$OPCA_USER/cn')
-    hostname_url = base_url.format(f'{openvpn_title}/server/hostname')
-    port_url = base_url.format(f'{openvpn_title}/server/port')
-    cipher_url = base_url.format(f'{openvpn_title}/server/cipher')
-    auth_url = base_url.format(f'{openvpn_title}/server/auth')
-    ca_cert_url = base_url.format((f'{DEFAULT_OP_CONF["ca_title"]}/'
-                                    f'{DEFAULT_OP_CONF["cert_item"]}'))
-    cert_url = base_url.format(f'$OPCA_USER/{DEFAULT_OP_CONF["cert_item"]}')
-    private_key_url = base_url.format(f'$OPCA_USER/{DEFAULT_OP_CONF["key_item"]}')
-    tls_auth_url = base_url.format((f'{openvpn_title}/'
-                                    f'{DEFAULT_OP_CONF["ta_item"].replace(".", "/")}'))
+    return EXIT_OK
 
-    attributes = ['server.hostname[text]=vpn.domain.com.au',
-                'server.port[text]=1194',
-                'server.cipher[text]=aes-256-gcm',
-                'server.auth[text]=sha256',
-                f'''template.sample[text]=#
-# Client - {{{{ { client_url } }}}}
-#
 
-# Brought to you by Wired Square - www.wiredsquare.com
+def handle_template_save(app: App) -> int:
+    """Save template content to the OpenVPN 1Password item."""
+    openvpn_title = DEFAULT_OP_CONF["openvpn_title"]
+    template_name = app.args.template
+    template_content = app.args.template_content
 
-client
-dev tun
-proto udp
-remote {{{{ { hostname_url } }}}} {{{{ { port_url } }}}}
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-cipher {{{{ { cipher_url } }}}}
-auth {{{{ { auth_url } }}}}
-verb 3
-key-direction 1
-mssfix 1300
-<ca>
-{{{{ { ca_cert_url } }}}}
-</ca>
-<cert>
-{{{{ { cert_url } }}}}
-</cert>
-<key>
-{{{{ { private_key_url } }}}}
-</key>
-<tls-auth>
-{{{{ { tls_auth_url } }}}}
-</tls-auth>
-''']
+    if not template_name:
+        error('Template name is required', 1)
+        return 1
 
-    result = app.op.store_item(item_title=DEFAULT_OP_CONF["openvpn_title"],
-                                        action='create', attributes=attributes)
+    if not template_content:
+        error('Template content is required', 1)
+        return 1
 
+    title(f'Saving template [ {COLOUR_BRIGHT}{template_name}{COLOUR_RESET} ]', 9)
+    attributes = [f'template.{template_name}[text]={template_content}']
+    result = app.op.store_item(
+        item_title=openvpn_title,
+        action='edit',
+        attributes=attributes,
+    )
     print_result(result.returncode == 0)
 
     return EXIT_OK
@@ -405,8 +546,9 @@ def handle_dh_import(app: App) -> int:
                 f'{DEFAULT_OP_CONF["dh_key_size_item"]}={ dh_keysize }'
                 ]
 
+    action = _resolve_store_action(app)
     result = app.op.store_item(item_title=DEFAULT_OP_CONF["openvpn_title"],
-                        attributes=attributes)
+                        attributes=attributes, action=action)
 
     print_result(result.returncode == 0)
 
@@ -435,8 +577,9 @@ def handle_ta_key_import(app: App) -> int:
                 f'{DEFAULT_OP_CONF["ta_key_size_item"]}={ ta_keysize }'
                 ]
 
+    action = _resolve_store_action(app)
     result = app.op.store_item(item_title=DEFAULT_OP_CONF["openvpn_title"],
-                        attributes=attributes)
+                        attributes=attributes, action=action)
 
     print_result(result.returncode == 0)
 
