@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from .actions import handle_csr_create, handle_csr_import
+from .actions import handle_csr_create, handle_csr_import, handle_csr_sign
 from opca.constants import EXIT_OK
 from opca.models import App
 
@@ -53,6 +53,33 @@ def _add_import_subcommand(actions: argparse._SubParsersAction) -> argparse.Argu
     return parser
 
 
+def _add_sign_subcommand(actions: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    """
+    Register `csr sign`
+    """
+
+    parser = actions.add_parser("sign",
+        help="Sign an external CSR with the local CA")
+    parser.add_argument("-c", "--csr-file",
+        required=False,
+        help="Path to CSR file (PEM or DER)")
+    parser.add_argument("--csr-pem",
+        required=False,
+        help="Inline CSR PEM string")
+    parser.add_argument("-t", "--csr-type",
+        required=False,
+        default="webserver",
+        choices=["appledev", "device", "vpnclient", "vpnserver", "webserver"],
+        help="Certificate type (default: webserver)")
+    parser.add_argument("-n", "--cn",
+        required=False,
+        help="CN override (defaults to CN from CSR subject)")
+
+    parser.set_defaults(handler=handle_csr_sign)
+
+    return parser
+
+
 def register(subparsers: argparse._SubParsersAction) -> None:
     """
     Register the `csr` command and its actions.
@@ -70,6 +97,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
     _add_create_subcommand(actions)
     _add_import_subcommand(actions)
+    _add_sign_subcommand(actions)
 
     parser.set_defaults(handler=_show_help, _parser=parser)
 
