@@ -261,7 +261,7 @@ class CSRScreen(Screen):
     @work(thread=True, exclusive=True, group="op")
     def _do_import(self) -> None:
         select = self.query_one("#import-cn-select", Select)
-        cn = select.value if select.value != Select.BLANK else None
+        cn = str(select.value) if isinstance(select.value, str) else None
         file_input = self.query_one("#view-import").query_one(FileInput)
         cert_content = file_input.get_content()
 
