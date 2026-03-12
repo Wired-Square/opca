@@ -30,7 +30,12 @@ def capture_handler(handler: Callable[..., int], *args: Any, **kwargs: Any) -> t
     Run an existing CLI handler, capturing its stdout output.
     Returns (exit_code, captured_output_without_ansi).
     """
-    with io.StringIO() as buf, contextlib.redirect_stdout(buf):
-        exit_code = handler(*args, **kwargs)
-        output = buf.getvalue()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            exit_code = handler(*args, **kwargs)
+        except SystemExit as exc:
+            exit_code = exc.code if isinstance(exc.code, int) else 1
+    output = buf.getvalue()
+    buf.close()
     return exit_code, strip_ansi(output)
