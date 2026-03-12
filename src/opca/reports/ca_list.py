@@ -49,10 +49,11 @@ def ca_list(rows: list[dict], *, report_title: str) -> int:
     }
 
     for index, cert in enumerate(rows):
-        if len(cert["cn"]) <= 35:
-            cn = cert["cn"]
-        else:
-            cn = cert["cn"][:32] + "..."
+        cn = cert["cn"]
+        if cert.get("issuer"):
+            cn = f"[EXT_{cert['issuer']}] {cn}"
+        if len(cn) > 35:
+            cn = cn[:32] + "..."
 
         expiry_str = format_datetime(
             date=datetime.strptime(

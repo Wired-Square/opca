@@ -258,10 +258,47 @@ def handle_ca_list(app: App) -> int:
             "serial": int(cert["serial"]),
             "cn": cert["cn"],
             "title": cert["title"],
-            "status": status,                      # "Valid"|"Revoked"|"Expired"|"Expiring"
-            "expiry_date": cert["expiry_date"],    # "YYYYmmddHHMMSSZ"
+            "status": status,
+            "expiry_date": cert["expiry_date"],
             "revocation_date": cert.get("revocation_date"),
         })
+
+    # Include external certificates in the listing
+    ext_expiring_set = set(map(int, db.ext_certs_expires_soon))
+    if getattr(app.args, "cn", None) is None and getattr(app.args, "serial", None) is None:
+        mode = getattr(app.args, "list_mode", "all")
+        if mode == "all":
+            ext_serials = sorted(
+                db.ext_certs_valid | db.ext_certs_expired | db.ext_certs_expires_soon,
+                key=int,
+            )
+        elif mode == "valid":
+            ext_serials = sorted(db.ext_certs_valid, key=int)
+        elif mode == "expired":
+            ext_serials = sorted(db.ext_certs_expired, key=int)
+        elif mode == "expiring":
+            ext_serials = sorted(db.ext_certs_expires_soon, key=int)
+        else:
+            ext_serials = []
+
+        for serial in ext_serials:
+            cert = db.query_external_cert(cert_info={'serial': int(serial)})
+            if not cert:
+                continue
+
+            status = cert["status"]
+            if status == "Valid" and int(cert["serial"]) in ext_expiring_set:
+                status = "Expiring"
+
+            rows.append({
+                "serial": int(cert["serial"]),
+                "cn": cert["cn"],
+                "title": cert["title"],
+                "status": status,
+                "expiry_date": cert["expiry_date"],
+                "revocation_date": None,
+                "issuer": cert.get("issuer"),
+            })
 
     return ca_list(rows, report_title=report_title)
 

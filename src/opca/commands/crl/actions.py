@@ -72,7 +72,7 @@ def handle_crl_info(app: App) -> int:
     if crl_info["revoked"]:
         print(f"{ COLOUR_BRIGHT }Revoked Certificates:{ COLOUR_RESET}")
         for cert in crl_info["revoked"]:
-            print(f"  Serial: {cert.serial_number}, Revocation Date: {cert.revocation_date_utc}")
+            print(f"  Serial: {cert['serial']}, Revocation Date: {cert['date']}")
     else:
         print(f"{ COLOUR_BRIGHT }No Revoked Certificates:{ COLOUR_RESET}")
 
