@@ -17,7 +17,7 @@ class CertInfoScreen(Screen):
 
     BINDINGS = [("escape", "app.pop_screen", "Back")]
 
-    def __init__(self, cn: str, serial: int, title: str = "", **kwargs: object) -> None:
+    def __init__(self, cn: str, serial: str | int, title: str = "", **kwargs: object) -> None:
         super().__init__(**kwargs)
         self._cn = cn
         self._serial = serial

@@ -27,7 +27,7 @@ class CertExportScreen(Screen):
 
     BINDINGS = [("escape", "app.pop_screen", "Back")]
 
-    def __init__(self, cn: str, serial: int, title: str = "", **kwargs: object) -> None:
+    def __init__(self, cn: str, serial: str | int, title: str = "", **kwargs: object) -> None:
         super().__init__(**kwargs)
         self._cn = cn
         self._serial = serial
@@ -35,6 +35,13 @@ class CertExportScreen(Screen):
         self._cert_pem: str | None = None
         self._key_pem: str | None = None
         self._p12_bytes: bytes | None = None
+        self._bundle = None
+
+    def _get_bundle(self, ctx):
+        """Return cached bundle, or fetch from 1Password once."""
+        if self._bundle is None:
+            self._bundle = ctx.ca.retrieve_certbundle(self._title)
+        return self._bundle
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
@@ -125,7 +132,7 @@ class CertExportScreen(Screen):
 
         ctx = self.app.tui_context
         try:
-            bundle = ctx.ca.retrieve_certbundle(self._title)
+            bundle = self._get_bundle(ctx)
             if bundle is None:
                 self.app.call_from_thread(self._show_error, "Certificate not found")
                 return
@@ -170,7 +177,7 @@ class CertExportScreen(Screen):
 
         ctx = self.app.tui_context
         try:
-            bundle = ctx.ca.retrieve_certbundle(self._title)
+            bundle = self._get_bundle(ctx)
             if bundle is None:
                 self.app.call_from_thread(self._show_error, "Certificate not found")
                 return
@@ -204,7 +211,7 @@ class CertExportScreen(Screen):
         try:
             # Fetch if not already cached
             if self._cert_pem is None:
-                bundle = ctx.ca.retrieve_certbundle(self._title)
+                bundle = self._get_bundle(ctx)
                 if bundle is None:
                     self.app.call_from_thread(self._show_error, "Certificate not found")
                     return
@@ -237,7 +244,7 @@ class CertExportScreen(Screen):
         ctx = self.app.tui_context
         try:
             if self._p12_bytes is None:
-                bundle = ctx.ca.retrieve_certbundle(self._title)
+                bundle = self._get_bundle(ctx)
                 if bundle is None:
                     self.app.call_from_thread(self._show_error, "Certificate not found")
                     return
