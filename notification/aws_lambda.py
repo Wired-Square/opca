@@ -132,6 +132,13 @@ def run_tests(ca_cert_data, crl_data, db_data):
     """
     rows = ca_database_handler(db_data['path'], cadb_query)
 
+    ext_query = """
+        SELECT serial, cn, expiry_date, issuer
+        FROM external_certificate
+        WHERE status = 'Valid'
+    """
+    ext_rows = ca_database_handler(db_data['path'], ext_query)
+
     msg = concat_msg('*CA Database*')
     warning = False
 
@@ -153,6 +160,19 @@ def run_tests(ca_cert_data, crl_data, db_data):
                           f'{expiring_certs['msg']}')
     else:
         msg += concat_msg(f'  ✅ No certificates expiring in the next {days} days.')
+
+    # Check for external certificates expiring soon
+    if ext_rows:
+        msg += concat_msg('\n*External Certificates*')
+        expiring_ext_certs = find_expiring_certificates(ext_rows, days)
+        num_ext_certs = len(expiring_ext_certs['certs'])
+
+        if expiring_ext_certs['expiring']:
+            warning = True
+            msg += concat_msg(f'  ⚠️ *[{num_ext_certs}] External certificates expiring in the next {days} days.*\n' +
+                              f'{expiring_ext_certs['msg']}')
+        else:
+            msg += concat_msg(f'  ✅ No external certificates expiring in the next {days} days.')
 
     msg += concat_msg('\n*CA Certificate*')
     # Check CA Certificate validity
