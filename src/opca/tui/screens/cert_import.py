@@ -44,12 +44,14 @@ class CertImportScreen(Screen):
             )
 
             yield Static("CSR Common Name (optional):", classes="form-label")
-            yield Select(
-                [],
-                prompt="Select a pending CSR",
-                allow_blank=True,
-                id="csr-cn-select",
-            )
+            with Horizontal(classes="form-row"):
+                yield Select(
+                    [],
+                    prompt="Select a pending CSR",
+                    allow_blank=True,
+                    id="csr-cn-select",
+                )
+                yield Button("Detect", variant="default", id="btn-detect-csr")
 
             with Horizontal(classes="button-row"):
                 yield Button("Import", variant="primary", id="btn-import")
@@ -76,21 +78,67 @@ class CertImportScreen(Screen):
             pass
 
     def _set_csr_options(self, options: list) -> None:
+        self._pending_csr_cns = [val for _, val in options]
         select = self.query_one("#csr-cn-select", Select)
         select.set_options(options)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-home":
             self.app.pop_screen()
+        elif event.button.id == "btn-detect-csr":
+            self._detect_csr()
         elif event.button.id == "btn-import":
             self._submit()
+
+    @work(thread=True, exclusive=True, group="op")
+    def _detect_csr(self) -> None:
+        """Extract CN from the certificate and select the matching pending CSR."""
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.x509.oid import NameOID
+
+        fi_cert = self.query_one("#fi-cert", FileInput)
+        cert_content = fi_cert.get_content()
+        if not cert_content:
+            self.app.call_from_thread(self._show_error, "Provide a certificate first.")
+            return
+
+        try:
+            certificate = x509.load_pem_x509_certificate(cert_content, default_backend())
+        except Exception:
+            try:
+                certificate = x509.load_der_x509_certificate(cert_content, default_backend())
+            except Exception:
+                self.app.call_from_thread(self._show_error, "Unable to parse certificate.")
+                return
+
+        cn_attrs = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if not cn_attrs:
+            self.app.call_from_thread(self._show_error, "No Common Name found in certificate.")
+            return
+
+        cn = cn_attrs[0].value
+        select = self.query_one("#csr-cn-select", Select)
+
+        pending = getattr(self, "_pending_csr_cns", [])
+        if cn in pending:
+            self.app.call_from_thread(setattr, select, "value", cn)
+            self.app.call_from_thread(
+                self.query_one("#import-status", Static).update,
+                f"[green]Matched pending CSR: {cn}[/green]",
+            )
+        else:
+            self.app.call_from_thread(
+                self.query_one("#import-status", Static).update,
+                f"[yellow]No pending CSR found for '{cn}'[/yellow]",
+            )
 
     def _submit(self) -> None:
         fi_cert = self.query_one("#fi-cert", FileInput)
         fi_key = self.query_one("#fi-key", FileInput)
         csr_select = self.query_one("#csr-cn-select", Select)
         csr_value = csr_select.value
-        csr_cn = "" if csr_value is Select.BLANK or csr_value is Select.NULL else str(csr_value)
+        csr_cn = str(csr_value) if isinstance(csr_value, str) else ""
 
         has_key = bool(fi_key.value)
         has_csr = bool(csr_cn)

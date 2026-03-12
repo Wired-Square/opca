@@ -82,18 +82,20 @@ class CSRScreen(Screen):
                     yield Button("Create CSR", variant="primary", id="btn-create")
 
             with VerticalScroll(id="view-import"):
-                yield Static("CSR (optional — auto-detected from certificate):", classes="form-label")
-                yield Select(
-                    [],
-                    prompt="Auto-detect from certificate",
-                    allow_blank=True,
-                    id="import-cn-select",
-                )
                 yield FileInput(
                     label="Certificate (file path or paste PEM):",
                     placeholder="File path or paste PEM content",
                     input_id="import-cert-input",
                 )
+                yield Static("CSR (optional):", classes="form-label")
+                with Horizontal(classes="form-row"):
+                    yield Select(
+                        [],
+                        prompt="Select a pending CSR",
+                        allow_blank=True,
+                        id="import-cn-select",
+                    )
+                    yield Button("Detect", variant="default", id="btn-detect-csr")
                 with Horizontal(classes="button-row"):
                     yield Button("Import Cert", variant="primary", id="btn-import")
 
@@ -148,6 +150,8 @@ class CSRScreen(Screen):
             self._do_export_csr()
         elif event.button.id == "btn-copy-csr":
             self._do_copy_csr()
+        elif event.button.id == "btn-detect-csr":
+            self._detect_csr()
         elif event.button.id == "btn-sign":
             self._do_sign()
         elif event.button.id == "btn-browse-export":
@@ -255,8 +259,62 @@ class CSRScreen(Screen):
             pass
 
     def _set_import_csr_options(self, options: list) -> None:
+        self._pending_csr_cns = [val for _, val in options]
         select = self.query_one("#import-cn-select", Select)
         select.set_options(options)
+
+    @work(thread=True, exclusive=True, group="op")
+    def _detect_csr(self) -> None:
+        """Extract CN from the certificate and select the matching pending CSR."""
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.x509.oid import NameOID
+
+        file_input = self.query_one("#view-import").query_one(FileInput)
+        cert_content = file_input.get_content()
+        if not cert_content:
+            self.app.call_from_thread(
+                self.query_one("#csr-status", Static).update,
+                "[red]Provide a certificate first[/red]",
+            )
+            return
+
+        try:
+            certificate = x509.load_pem_x509_certificate(cert_content, default_backend())
+        except Exception:
+            try:
+                certificate = x509.load_der_x509_certificate(cert_content, default_backend())
+            except Exception:
+                self.app.call_from_thread(
+                    self.query_one("#csr-status", Static).update,
+                    "[red]Unable to parse certificate[/red]",
+                )
+                return
+
+        cn_attrs = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if not cn_attrs:
+            self.app.call_from_thread(
+                self.query_one("#csr-status", Static).update,
+                "[red]No Common Name found in certificate[/red]",
+            )
+            return
+
+        cn = cn_attrs[0].value
+        select = self.query_one("#import-cn-select", Select)
+
+        # Check if the CN matches a pending CSR in the dropdown
+        pending = getattr(self, "_pending_csr_cns", [])
+        if cn in pending:
+            self.app.call_from_thread(setattr, select, "value", cn)
+            self.app.call_from_thread(
+                self.query_one("#csr-status", Static).update,
+                f"[green]Matched pending CSR: {cn}[/green]",
+            )
+        else:
+            self.app.call_from_thread(
+                self.query_one("#csr-status", Static).update,
+                f"[yellow]No pending CSR found for '{cn}'[/yellow]",
+            )
 
     @work(thread=True, exclusive=True, group="op")
     def _do_import(self) -> None:
