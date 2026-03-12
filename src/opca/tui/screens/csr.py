@@ -52,8 +52,8 @@ class CSRScreen(Screen):
             yield ScreenHeader("Certificate Signing Requests")
 
             yield NavBar(
-                [("Home", "home"), ("CSR", "list"), ("Create CSR", "create"),
-                 ("Import CSR", "import"), ("Sign CSR", "sign")],
+                [("Home", "home"), ("CSR", "list"), ("Create", "create"),
+                 ("Sign", "sign"), ("Import Cert", "import")],
                 default="list",
             )
 
@@ -82,15 +82,20 @@ class CSRScreen(Screen):
                     yield Button("Create CSR", variant="primary", id="btn-create")
 
             with VerticalScroll(id="view-import"):
-                yield Static("CN:", classes="form-label")
-                yield Input(placeholder="e.g. John Smith", id="import-cn")
+                yield Static("CSR (optional — auto-detected from certificate):", classes="form-label")
+                yield Select(
+                    [],
+                    prompt="Auto-detect from certificate",
+                    allow_blank=True,
+                    id="import-cn-select",
+                )
                 yield FileInput(
                     label="Certificate (file path or paste PEM):",
                     placeholder="File path or paste PEM content",
                     input_id="import-cert-input",
                 )
                 with Horizontal(classes="button-row"):
-                    yield Button("Import", variant="primary", id="btn-import")
+                    yield Button("Import Cert", variant="primary", id="btn-import")
 
             with VerticalScroll(id="view-sign"):
                 yield FileInput(
@@ -126,6 +131,8 @@ class CSRScreen(Screen):
         self._switch_view(event.view_id)
         if event.view_id == "list":
             self._load_csrs()
+        elif event.view_id == "import":
+            self._load_pending_csrs()
 
     def on_nav_bar_home(self, event: NavBar.Home) -> None:
         self.app.pop_screen()
@@ -235,21 +242,39 @@ class CSRScreen(Screen):
         finally:
             self.app.call_from_thread(op_status.hide)
 
+    @work(thread=True, exclusive=True, group="csr-load")
+    def _load_pending_csrs(self) -> None:
+        try:
+            ctx = self.app.tui_context
+            if not ctx.has_ca:
+                return
+            csrs = ctx.ca.ca_database.query_all_csrs(status="Pending")
+            options = [(csr["cn"], csr["cn"]) for csr in csrs]
+            self.app.call_from_thread(self._set_import_csr_options, options)
+        except (Exception, SystemExit):
+            pass
+
+    def _set_import_csr_options(self, options: list) -> None:
+        select = self.query_one("#import-cn-select", Select)
+        select.set_options(options)
+
     @work(thread=True, exclusive=True, group="op")
     def _do_import(self) -> None:
-        cn = self.query_one("#import-cn", Input).value.strip()
+        select = self.query_one("#import-cn-select", Select)
+        cn = select.value if select.value != Select.BLANK else None
         file_input = self.query_one("#view-import").query_one(FileInput)
         cert_content = file_input.get_content()
 
-        if not cn or not cert_content:
+        if not cert_content:
             self.app.call_from_thread(
                 self.query_one("#csr-status", Static).update,
-                "[red]CN and certificate are required for import[/red]",
+                "[red]Certificate is required for import[/red]",
             )
             return
 
         op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Importing certificate for {cn}...")
+        label = cn or "certificate"
+        self.app.call_from_thread(op_status.show, f"Importing certificate for {label}...")
         try:
             from opca.commands.csr.actions import handle_csr_import
             ctx = self.app.tui_context
