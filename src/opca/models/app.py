@@ -35,6 +35,8 @@ class App:
             (cmd == "ca" and sub in {"init", "import"})
             or (cmd == "csr")
             or (cmd == "database" and sub == "rebuild")
+            or (cmd == "tui")
+            or (cmd == "vault")
         )
 
         if initlike:

@@ -11,9 +11,13 @@ from opca.utils.formatting import error
 
 StrPath = Union[str, Path]
 
+def _expand_path(path: StrPath) -> Path:
+    """Expand ~ and environment variables in a path."""
+    return Path(os.path.expanduser(os.path.expandvars(str(path))))
+
 def read_bytes(path: StrPath) -> bytes:
     """Read a file as bytes; exits with a message on failure."""
-    file_path = Path(path)
+    file_path = _expand_path(path)
 
     try:
         return file_path.read_bytes()
@@ -48,7 +52,7 @@ def write_bytes(
     Returns:
         The resolved Path of the written file.
     """
-    file_path = Path(path)
+    file_path = _expand_path(path)
     parent = file_path.parent
 
     try:
