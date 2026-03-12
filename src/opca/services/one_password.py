@@ -46,16 +46,22 @@ class Op:
     # High-level helpers
     # -------------------------
 
+    def _account_args(self) -> list[str]:
+        """Return --account flags when an account is configured."""
+        if self.account:
+            return ['--account', self.account]
+        return []
+
     def _ensure_signed_in(self) -> None:
         """ Ensure we have a valid signin to 1Password """
-        result = _run_command([self.bin, "whoami"])
+        result = _run_command([self.bin, "whoami"] + self._account_args())
 
         if result.returncode == 0:
             return
 
         self._interactive_signin()
         # retry once
-        res = _run_command([self.bin, "whoami"])
+        res = _run_command([self.bin, "whoami"] + self._account_args())
         if res.returncode == 0:
             return
 
@@ -64,9 +70,21 @@ class Op:
     def _ensure_vault_exists(self) -> None:
         if not self.vault:
             raise VaultNotFoundError("No 1Password vault configured. Use --vault or OPCA_VAULT.")
-        result = _run_command([self.bin, "vault", "get", self.vault])
-        if result.returncode != 0:
-            _raise_mapped_error(result, default=VaultNotFoundError(f"1Password vault {self.vault!r} not found."))
+        cmd = [self.bin, "vault", "get", self.vault] + self._account_args()
+        result = _run_command(cmd)
+        if result.returncode == 0:
+            return
+
+        # When an account is specified, the session may have expired even
+        # though _ensure_signed_in succeeded.  Try one re-signin before
+        # raising.
+        if self.account:
+            self._interactive_signin()
+            result = _run_command(cmd)
+            if result.returncode == 0:
+                return
+
+        _raise_mapped_error(result, default=VaultNotFoundError(f"1Password vault {self.vault!r} not found."))
 
     def _checked(self, args: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess:
         """ Map common CLI failures to OPError subsclesses """
