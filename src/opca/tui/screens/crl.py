@@ -119,25 +119,29 @@ class CRLScreen(Screen):
                 )
                 return
 
-            revoked_list = crl_info.get("revoked", [])
-            info = (
-                f"[bold]Issuer:[/bold]        {crl_info.get('issuer', '-')}\n"
-                f"[bold]Last Update:[/bold]   {crl_info.get('last_update', '-')}\n"
-                f"[bold]Next Update:[/bold]   {crl_info.get('next_update', '-')}\n"
-                f"[bold]CRL Number:[/bold]    {crl_info.get('crl_number', '-')}\n"
-                f"[bold]Expired:[/bold]       {'Yes' if crl_info.get('expired') else 'No'}\n"
-                f"[bold]Revoked Certs:[/bold] {len(revoked_list)}\n"
-            )
-            if revoked_list:
-                info += "\n[bold]Revoked Serials:[/bold]\n"
-                for entry in revoked_list:
-                    info += f"  Serial {entry.get('serial', '?')} - {entry.get('date', '?')}\n"
-
-            self.app.call_from_thread(log.write, info)
+            self.app.call_from_thread(log.write, self._format_crl_info(crl_info))
         except (Exception, SystemExit) as e:
             self.app.call_from_thread(log.log_error, f"Error: {e}")
         finally:
             self.app.call_from_thread(op_status.hide)
+
+    @staticmethod
+    def _format_crl_info(crl_info: dict) -> str:
+        """Format CRL info dict into Rich-markup text."""
+        revoked_list = crl_info.get("revoked", [])
+        info = (
+            f"[bold]Issuer:[/bold]        {crl_info.get('issuer', '-')}\n"
+            f"[bold]Last Update:[/bold]   {crl_info.get('last_update', '-')}\n"
+            f"[bold]Next Update:[/bold]   {crl_info.get('next_update', '-')}\n"
+            f"[bold]CRL Number:[/bold]    {crl_info.get('crl_number', '-')}\n"
+            f"[bold]Expired:[/bold]       {'Yes' if crl_info.get('expired') else 'No'}\n"
+            f"[bold]Revoked Certs:[/bold] {len(revoked_list)}\n"
+        )
+        if revoked_list:
+            info += "\n[bold]Revoked Serials:[/bold]\n"
+            for entry in revoked_list:
+                info += f"  Serial {entry.get('serial', '?')} - {entry.get('date', '?')}\n"
+        return info
 
     @work(thread=True, exclusive=True, group="op")
     def _do_copy(self) -> None:
@@ -188,21 +192,8 @@ class CRLScreen(Screen):
             crl_info = ctx.ca.get_crl_info()
             if not crl_info:
                 return
-            revoked_list = crl_info.get("revoked", [])
-            info = (
-                f"[bold]Issuer:[/bold]        {crl_info.get('issuer', '-')}\n"
-                f"[bold]Last Update:[/bold]   {crl_info.get('last_update', '-')}\n"
-                f"[bold]Next Update:[/bold]   {crl_info.get('next_update', '-')}\n"
-                f"[bold]CRL Number:[/bold]    {crl_info.get('crl_number', '-')}\n"
-                f"[bold]Expired:[/bold]       {'Yes' if crl_info.get('expired') else 'No'}\n"
-                f"[bold]Revoked Certs:[/bold] {len(revoked_list)}\n"
-            )
-            if revoked_list:
-                info += "\n[bold]Revoked Serials:[/bold]\n"
-                for entry in revoked_list:
-                    info += f"  Serial {entry.get('serial', '?')} - {entry.get('date', '?')}\n"
             self.app.call_from_thread(log.clear)
-            self.app.call_from_thread(log.write, info)
+            self.app.call_from_thread(log.write, self._format_crl_info(crl_info))
         except (Exception, SystemExit):
             pass
 
