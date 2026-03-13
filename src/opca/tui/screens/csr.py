@@ -256,9 +256,7 @@ class CSRScreen(TabbedViewMixin, Screen):
     @work(thread=True, exclusive=True, group="op")
     def _detect_csr(self) -> None:
         """Extract CN from the certificate and select the matching pending CSR."""
-        from cryptography import x509
-        from cryptography.hazmat.backends import default_backend
-        from cryptography.x509.oid import NameOID
+        from opca.tui.workers import extract_certificate_cn
 
         file_input = self.query_one("#view-import").query_one(FileInput)
         cert_content = file_input.get_content()
@@ -269,30 +267,15 @@ class CSRScreen(TabbedViewMixin, Screen):
             )
             return
 
-        try:
-            certificate = x509.load_pem_x509_certificate(cert_content, default_backend())
-        except Exception:
-            try:
-                certificate = x509.load_der_x509_certificate(cert_content, default_backend())
-            except Exception:
-                self.app.call_from_thread(
-                    self.query_one("#csr-status", Static).update,
-                    "[red]Unable to parse certificate[/red]",
-                )
-                return
-
-        cn_attrs = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-        if not cn_attrs:
+        cn = extract_certificate_cn(cert_content)
+        if cn is None:
             self.app.call_from_thread(
                 self.query_one("#csr-status", Static).update,
-                "[red]No Common Name found in certificate[/red]",
+                "[red]Unable to parse certificate or no CN found[/red]",
             )
             return
 
-        cn = cn_attrs[0].value
         select = self.query_one("#import-cn-select", Select)
-
-        # Check if the CN matches a pending CSR in the dropdown
         pending = getattr(self, "_pending_csr_cns", [])
         if cn in pending:
             self.app.call_from_thread(setattr, select, "value", cn)
