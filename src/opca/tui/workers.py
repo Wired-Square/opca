@@ -15,16 +15,6 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub('', text)
 
 
-def set_loading(screen: Any, loading: bool) -> None:
-    """Set loading overlay on the screen's first Vertical container."""
-    try:
-        from textual.containers import Vertical
-        container = screen.query_one(Vertical)
-        container.loading = loading
-    except Exception:
-        pass
-
-
 def capture_handler(handler: Callable[..., int], *args: Any, **kwargs: Any) -> tuple[int, str]:
     """
     Run an existing CLI handler, capturing its stdout output.

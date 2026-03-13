@@ -219,23 +219,6 @@ HelpModal {
     padding: 2 4;
 }
 
-/* --- Status colors --- */
-.status-valid {
-    color: green;
-}
-
-.status-revoked {
-    color: red;
-}
-
-.status-expired {
-    color: $text-muted;
-}
-
-.status-expiring {
-    color: yellow;
-}
-
 /* --- File picker modals --- */
 FilePickerScreen {
     align: center middle;
@@ -390,22 +373,4 @@ VaultPicker {
 #vault-picker-table {
     height: auto;
     max-height: 20;
-}
-
-/* --- StatusBar widget --- */
-StatusBar {
-    dock: bottom;
-    height: 1;
-    background: $primary-background;
-    color: $text-muted;
-}
-
-StatusBar Horizontal {
-    width: 1fr;
-    height: 1;
-}
-
-StatusBar .status-item {
-    width: auto;
-    padding: 0 2;
 }
