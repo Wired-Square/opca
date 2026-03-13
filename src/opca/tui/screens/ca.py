@@ -12,13 +12,14 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, Static
 
 from opca.constants import DEFAULT_KEY_SIZE, DEFAULT_OP_CONF
+from opca.tui.mixins import TabbedViewMixin
 from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
 
 
-class CAScreen(Screen):
+class CAScreen(TabbedViewMixin, Screen):
     """CA management: view info, init, import, export, upload."""
 
     BINDINGS = [("escape", "app.pop_screen", "Back")]
@@ -122,12 +123,6 @@ class CAScreen(Screen):
         has_ca = self.app.tui_context.has_ca
         self.query_one("#btn-do-init", Button).disabled = has_ca
         self.query_one("#nav-init", Button).disabled = has_ca
-
-    def on_nav_bar_home(self, event: NavBar.Home) -> None:
-        self.app.pop_screen()
-
-    def on_nav_bar_selected(self, event: NavBar.Selected) -> None:
-        self._switch_view(event.view_id)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-do-init":

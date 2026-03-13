@@ -8,6 +8,7 @@ from textual.containers import Vertical, Horizontal
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, Static
 
+from opca.tui.mixins import TabbedViewMixin
 from opca.tui.screens.confirm import ConfirmModal
 from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
@@ -16,7 +17,7 @@ from opca.tui.widgets.screen_header import ScreenHeader
 from opca.tui.workers import capture_handler
 
 
-class DatabaseScreen(Screen):
+class DatabaseScreen(TabbedViewMixin, Screen):
     """CA database management: config, export, rebuild, upload."""
 
     BINDINGS = [("escape", "app.pop_screen", "Back")]
@@ -68,17 +69,10 @@ class DatabaseScreen(Screen):
         self._switch_view("info")
         self._load_config()
 
-    def _switch_view(self, view: str) -> None:
-        for v in self.VIEWS:
-            self.query_one(f"#view-{v}").display = v == view
-
     def on_nav_bar_selected(self, event: NavBar.Selected) -> None:
-        self._switch_view(event.view_id)
+        super().on_nav_bar_selected(event)
         if event.view_id == "info":
             self._load_config()
-
-    def on_nav_bar_home(self, event: NavBar.Home) -> None:
-        self.app.pop_screen()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-refresh":

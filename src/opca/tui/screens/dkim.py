@@ -8,6 +8,7 @@ from textual.containers import Vertical, VerticalScroll, Horizontal
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, DataTable, Footer, Input, Static
 
+from opca.tui.mixins import TabbedViewMixin
 from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
@@ -15,7 +16,7 @@ from opca.tui.widgets.screen_header import ScreenHeader
 from opca.tui.workers import capture_handler
 
 
-class DKIMScreen(Screen):
+class DKIMScreen(TabbedViewMixin, Screen):
     """DKIM key management: create, deploy, info, list, verify."""
 
     BINDINGS = [("escape", "app.pop_screen", "Back")]
@@ -71,12 +72,6 @@ class DKIMScreen(Screen):
             self.query_one(f"#view-{v}").display = v == view
         if view == "keys":
             self._load_list()
-
-    def on_nav_bar_home(self, event: NavBar.Home) -> None:
-        self.app.pop_screen()
-
-    def on_nav_bar_selected(self, event: NavBar.Selected) -> None:
-        self._switch_view(event.view_id)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-refresh":

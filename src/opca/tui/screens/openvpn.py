@@ -10,6 +10,7 @@ from textual.containers import Vertical, Horizontal
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Input, Select, Static, TextArea
 
+from opca.tui.mixins import TabbedViewMixin
 from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
@@ -57,7 +58,7 @@ class NewTemplateModal(Screen):
         self.dismiss(name)
 
 
-class OpenVPNScreen(Screen):
+class OpenVPNScreen(TabbedViewMixin, Screen):
     """OpenVPN artifact management: generate, get, import."""
 
     BINDINGS = [("escape", "app.pop_screen", "Back")]
@@ -134,12 +135,6 @@ class OpenVPNScreen(Screen):
             self._load_client_data()
         elif view == "profiles":
             self._load_profiles()
-
-    def on_nav_bar_selected(self, event: NavBar.Selected) -> None:
-        self._switch_view(event.view_id)
-
-    def on_nav_bar_home(self, event: NavBar.Home) -> None:
-        self.app.pop_screen()
 
     @property
     def _selected_template(self) -> str:

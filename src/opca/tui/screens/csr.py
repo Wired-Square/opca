@@ -11,6 +11,7 @@ from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Input, Select, Static
 
 from opca.tui.clipboard import copy_to_clipboard
+from opca.tui.mixins import TabbedViewMixin
 from opca.tui.styles import style_status
 from opca.tui.widgets.file_input import FileInput
 from opca.tui.widgets.log_panel import LogPanel
@@ -36,7 +37,7 @@ SIGN_CERT_TYPES = [
 ]
 
 
-class CSRScreen(Screen):
+class CSRScreen(TabbedViewMixin, Screen):
     """CSR management: list, create, import, and sign."""
 
     BINDINGS = [("escape", "app.pop_screen", "Back")]
@@ -121,19 +122,12 @@ class CSRScreen(Screen):
     def on_screen_resume(self) -> None:
         self._load_csrs()
 
-    def _switch_view(self, view: str) -> None:
-        for v in self.VIEWS:
-            self.query_one(f"#view-{v}").display = v == view
-
     def on_nav_bar_selected(self, event: NavBar.Selected) -> None:
-        self._switch_view(event.view_id)
+        super().on_nav_bar_selected(event)
         if event.view_id == "list":
             self._load_csrs()
         elif event.view_id == "import":
             self._load_pending_csrs()
-
-    def on_nav_bar_home(self, event: NavBar.Home) -> None:
-        self.app.pop_screen()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-create":

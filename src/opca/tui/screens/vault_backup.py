@@ -22,6 +22,7 @@ from opca.services.one_password import Op
 from opca.services.vault import VaultBackup, VaultNotEmptyError
 from opca.tui.screens.password import PasswordModal, PasswordResult
 from opca.tui.screens.save_file_picker import SaveFilePickerScreen
+from opca.tui.mixins import TabbedViewMixin
 from opca.tui.screens.file_picker import FilePickerScreen
 from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
@@ -30,10 +31,12 @@ from opca.tui.widgets.screen_header import ScreenHeader
 from opca.utils.files import read_bytes, write_bytes
 
 
-class VaultBackupScreen(Screen):
+class VaultBackupScreen(TabbedViewMixin, Screen):
     """Vault backup, restore, and info operations."""
 
     BINDINGS = [("escape", "app.pop_screen", "Back")]
+
+    VIEWS = ["backup", "restore", "info"]
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -76,7 +79,7 @@ class VaultBackupScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self._show_view("backup")
+        self._switch_view("backup")
         # Pre-fill default backup filename with full path under home directory
         ctx = self.app.tui_context
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
@@ -86,15 +89,6 @@ class VaultBackupScreen(Screen):
 
     # --- Navigation ---
 
-    def on_nav_bar_selected(self, event: NavBar.Selected) -> None:
-        self._show_view(event.view_id)
-
-    def on_nav_bar_home(self, event: NavBar.Home) -> None:
-        self.app.pop_screen()
-
-    def _show_view(self, view_id: str) -> None:
-        for vid in ("backup", "restore", "info"):
-            self.query_one(f"#view-{vid}", Vertical).display = (vid == view_id)
 
 
     # --- Button handlers ---
