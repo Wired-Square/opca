@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
-from typing import Literal, Optional
+from typing import Literal
 
 from opca.utils.formatting import error
 
@@ -73,7 +73,6 @@ def parse_datetime(value: str, input_format: OutputFormat = "openssl") -> dateti
     elif input_format == "compact":
         fmt = "%H:%M %d %b %Y"
     else:
-        from opca.utils.formatting import error
         error(f"Invalid date format: {input_format!r}", 1)
 
     # parsed strings are UTC; attach tzinfo
