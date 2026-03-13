@@ -11,6 +11,7 @@ from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Input, Select, Static
 
 from opca.tui.clipboard import copy_to_clipboard
+from opca.tui.styles import style_status
 from opca.tui.widgets.file_input import FileInput
 from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
@@ -33,11 +34,6 @@ SIGN_CERT_TYPES = [
     ("VPN Client", "vpnclient"),
     ("VPN Server", "vpnserver"),
 ]
-
-STATUS_STYLES = {
-    "Pending": "[yellow]Pending[/yellow]",
-    "Complete": "[green]Complete[/green]",
-}
 
 
 class CSRScreen(Screen):
@@ -190,7 +186,7 @@ class CSRScreen(Screen):
         table = self.query_one("#csr-table", DataTable)
         table.clear()
         for csr in rows:
-            styled_status = STATUS_STYLES.get(csr["status"], csr["status"])
+            styled_status = style_status(csr["status"])
             # Display the raw CN (strip CSR_ prefix from title if present)
             display_cn = csr.get("cn", "")
             table.add_row(

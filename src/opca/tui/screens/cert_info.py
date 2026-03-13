@@ -8,6 +8,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Static
 
+from opca.tui.styles import style_status
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
 
@@ -65,12 +66,7 @@ class CertInfoScreen(Screen):
 
             san = str(san_obj) if san_obj else "-"
 
-            status_map = {
-                "Valid": "[green]Valid[/green]",
-                "Revoked": "[red]Revoked[/red]",
-                "Expired": "[dim]Expired[/dim]",
-            }
-            styled_status = status_map.get(db_status, f"[red]{db_status}[/red]")
+            styled_status = style_status(db_status)
 
             info = (
                 f"[bold]Serial:[/bold]       {self._serial}\n"

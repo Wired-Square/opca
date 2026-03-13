@@ -9,18 +9,11 @@ from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Static, Select
 
 from opca.tui.screens.confirm import ConfirmModal
+from opca.tui.styles import style_status
 from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
 from opca.utils.datetime import format_datetime, parse_datetime
-
-
-STATUS_STYLES = {
-    "Valid": "[green]Valid[/green]",
-    "Revoked": "[red]Revoked[/red]",
-    "Expired": "[dim]Expired[/dim]",
-    "Expiring": "[yellow]Expiring[/yellow]",
-}
 
 FILTER_MODES = [
     ("All", "all"),
@@ -290,7 +283,7 @@ class CertListScreen(Screen):
         table.clear()
         for row in rows:
             styled_row = list(row)
-            styled_row[3] = STATUS_STYLES.get(str(row[3]), str(row[3]))
+            styled_row[3] = style_status(str(row[3]))
             table.add_row(*[str(v) for v in styled_row])
         if rows and prev_row is not None:
             table.move_cursor(row=min(prev_row, len(rows) - 1))
