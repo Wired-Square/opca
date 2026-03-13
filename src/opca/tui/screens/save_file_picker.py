@@ -7,7 +7,7 @@ from pathlib import Path
 from textual.app import ComposeResult
 from textual.containers import Vertical, Horizontal
 from textual.screen import ModalScreen
-from textual.widgets import Button, DirectoryTree, Footer, Input, Static
+from textual.widgets import Button, DirectoryTree, Input, Static
 
 
 class SaveFilePickerScreen(ModalScreen[str | None]):
@@ -18,30 +18,6 @@ class SaveFilePickerScreen(ModalScreen[str | None]):
     """
 
     BINDINGS = [("escape", "cancel", "Cancel")]
-
-    DEFAULT_CSS = """
-    SaveFilePickerScreen {
-        align: center middle;
-    }
-    #save-picker-dialog {
-        width: 70;
-        height: 80%;
-        border: solid $accent;
-        padding: 1 2;
-    }
-    #save-picker-title {
-        text-style: bold;
-        padding-bottom: 1;
-    }
-    #save-picker-tree {
-        height: 1fr;
-    }
-    #save-picker-dir {
-        height: 1;
-        padding: 0 1;
-        color: $accent;
-    }
-    """
 
     def __init__(
         self,

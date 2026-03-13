@@ -21,28 +21,6 @@ class FileInput(Widget):
       - Pasted PEM content (multi-line, detected by '-----BEGIN' prefix)
     """
 
-    DEFAULT_CSS = """
-    FileInput {
-        height: auto;
-        layout: vertical;
-    }
-    FileInput .file-input-row {
-        layout: horizontal;
-        height: auto;
-    }
-    FileInput .file-input-row TextArea {
-        width: 1fr;
-        height: auto;
-        min-height: 3;
-        max-height: 12;
-    }
-    FileInput .file-input-row Button {
-        width: auto;
-        min-width: 10;
-        margin: 0 1;
-    }
-    """
-
     def __init__(
         self,
         label: str = "File:",
