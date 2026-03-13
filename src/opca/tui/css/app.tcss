@@ -79,6 +79,12 @@ ScreenHeader {
     color: $text;
 }
 
+#screen-header-context {
+    width: auto;
+    color: $text-muted;
+    text-style: italic;
+}
+
 #content-title {
     text-style: bold;
     color: $accent;
