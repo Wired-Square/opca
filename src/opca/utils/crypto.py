@@ -13,14 +13,6 @@ from cryptography.hazmat.primitives.serialization import load_pem_parameters
 from opca.constants import DEFAULT_KEY_SIZE
 from opca.services.ca_errors import InvalidCertificateError
 
-#from cryptography.x509 import UniformResourceIdentifier
-#from cryptography.x509.extensions import ExtensionOID, ExtensionNotFound
-#from cryptography.x509.oid import AuthorityInformationAccessOID, ExtensionOID, NameOID
-#from cryptography.hazmat.primitives import hashes, serialization
-#from cryptography.hazmat.primitives.asymmetric import dh, dsa, ec, rsa, padding
-#from cryptography.hazmat.primitives.serialization import Encoding, load_pem_parameters, pkcs12
-#from cryptography.exceptions import InvalidSignature
-
 
 def generate_dh_params(key_size=DEFAULT_KEY_SIZE['dh']):
     """
@@ -137,4 +129,20 @@ def verify_ta_key(ta_key_pem):
     return len(hex_string) * 4
 
 
+def extract_certificate_cn(cert_bytes: bytes) -> str | None:
+    """Parse a PEM or DER certificate and return the Common Name, or None."""
+    from cryptography.x509.oid import NameOID
+
+    try:
+        certificate = x509.load_pem_x509_certificate(cert_bytes, default_backend())
+    except Exception:
+        try:
+            certificate = x509.load_der_x509_certificate(cert_bytes, default_backend())
+        except Exception:
+            return None
+
+    cn_attrs = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    if not cn_attrs:
+        return None
+    return cn_attrs[0].value
 

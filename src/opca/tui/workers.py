@@ -5,7 +5,8 @@ from __future__ import annotations
 import contextlib
 import io
 import re
-from typing import Callable, Any
+from contextlib import contextmanager
+from typing import Any, Callable, Generator
 
 _ANSI_RE = re.compile(r'\033\[[0-9;]*m')
 
@@ -15,24 +16,27 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub('', text)
 
 
-def extract_certificate_cn(cert_bytes: bytes) -> str | None:
-    """Parse a PEM or DER certificate and return the Common Name, or None."""
-    from cryptography import x509
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.x509.oid import NameOID
+@contextmanager
+def op_status_context(screen: Any, message: str, status_id: str = "#op-status") -> Generator[None, None, None]:
+    """Show an OpStatus spinner for the duration of a worker block.
 
+    Usage inside a ``@work(thread=True)`` method::
+
+        with op_status_context(self, "Working..."):
+            ...  # OpStatus is hidden automatically on exit
+    """
+    from opca.tui.widgets.op_status import OpStatus
+
+    op_status = screen.query_one(status_id, OpStatus)
+    screen.app.call_from_thread(op_status.show, message)
     try:
-        certificate = x509.load_pem_x509_certificate(cert_bytes, default_backend())
-    except Exception:
-        try:
-            certificate = x509.load_der_x509_certificate(cert_bytes, default_backend())
-        except Exception:
-            return None
+        yield
+    finally:
+        screen.app.call_from_thread(op_status.hide)
 
-    cn_attrs = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-    if not cn_attrs:
-        return None
-    return cn_attrs[0].value
+
+# Re-export from canonical location for backwards compatibility.
+from opca.utils.crypto import extract_certificate_cn  # noqa: F401
 
 
 def capture_handler(handler: Callable[..., int], *args: Any, **kwargs: Any) -> tuple[int, str]:
