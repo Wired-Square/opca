@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from opca.models import App
 from opca.constants import (
     DEFAULT_KEY_SIZE,
+    DEFAULT_OP_CONF,
     EXIT_OK,
     EXIT_FATAL,
     COLOUR_BRIGHT,
@@ -185,7 +186,7 @@ def handle_dkim_create(app: App) -> int:
         item_title=item_title,
         attributes=attributes,
         action="create",
-        category="Secure Note",
+        category=DEFAULT_OP_CONF["category"],
     )
     print_result(result.returncode == 0)
 
@@ -339,7 +340,7 @@ def handle_dkim_list(app: App) -> int:
 
     # List all Secure Note items in the vault
     title("Retrieving DKIM keys from 1Password", 9)
-    result = app.op.item_list(categories="Secure Note")
+    result = app.op.item_list(categories=DEFAULT_OP_CONF["category"])
 
     if result.returncode != 0:
         print_result(False)
