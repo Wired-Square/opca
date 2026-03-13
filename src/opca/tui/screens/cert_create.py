@@ -11,6 +11,7 @@ from textual.widgets import Button, Footer, Input, Select, Static
 from opca.constants import DEFAULT_KEY_SIZE
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
+from opca.tui.workers import op_status_context
 
 
 CERT_TYPES = [
@@ -70,38 +71,34 @@ class CertCreateScreen(Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _do_create(self, cn: str, cert_type: str, alt_names: list[str] | None) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Creating certificate for {cn}...")
+        with op_status_context(self, f"Creating certificate for {cn}..."):
+            ctx = self.app.tui_context
+            try:
+                if ctx.op.item_exists(cn):
+                    self.app.call_from_thread(
+                        self.query_one("#create-status", Static).update,
+                        f"[red]'{cn}' already exists in 1Password[/red]",
+                    )
+                    return
 
-        ctx = self.app.tui_context
-        try:
-            if ctx.op.item_exists(cn):
+                base_config = ctx.ca.ca_certbundle.get_config().copy()
+                base_config["key_size"] = DEFAULT_KEY_SIZE[cert_type]
+                base_config["cn"] = cn
+                if alt_names:
+                    base_config["alt_dns_names"] = alt_names
+
+                bundle = ctx.ca.generate_certificate_bundle(
+                    cert_type=cert_type,
+                    item_title=cn,
+                    config=base_config,
+                )
+                valid = bundle.is_valid()
+                self.app.call_from_thread(self._on_created, cn, valid)
+            except (Exception, SystemExit) as e:
                 self.app.call_from_thread(
                     self.query_one("#create-status", Static).update,
-                    f"[red]'{cn}' already exists in 1Password[/red]",
+                    f"[red]Error: {e}[/red]",
                 )
-                return
-
-            base_config = ctx.ca.ca_certbundle.get_config().copy()
-            base_config["key_size"] = DEFAULT_KEY_SIZE[cert_type]
-            base_config["cn"] = cn
-            if alt_names:
-                base_config["alt_dns_names"] = alt_names
-
-            bundle = ctx.ca.generate_certificate_bundle(
-                cert_type=cert_type,
-                item_title=cn,
-                config=base_config,
-            )
-            valid = bundle.is_valid()
-            self.app.call_from_thread(self._on_created, cn, valid)
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(
-                self.query_one("#create-status", Static).update,
-                f"[red]Error: {e}[/red]",
-            )
-        finally:
-            self.app.call_from_thread(op_status.hide)
 
     def _on_created(self, cn: str, valid: bool) -> None:
         if valid:

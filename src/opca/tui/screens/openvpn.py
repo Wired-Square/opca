@@ -16,7 +16,7 @@ from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.vault_picker import VaultPicker
 from opca.tui.widgets.screen_header import ScreenHeader
-from opca.tui.workers import capture_handler
+from opca.tui.workers import capture_handler, op_status_context
 
 
 class NewTemplateModal(Screen):
@@ -198,23 +198,20 @@ class OpenVPNScreen(TabbedViewMixin, Screen):
     @work(thread=True, exclusive=True, group="op")
     def _load_template_list(self) -> None:
         """Fetch the OpenVPN item, populate the template Select, and update button state."""
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Loading templates...")
-        try:
-            loaded = self._fetch_openvpn_item()
-            templates = self._extract_template_names(loaded)
-            options = [(name, name) for name in templates]
-            self.app.call_from_thread(self._update_template_select, options)
+        with op_status_context(self, "Loading templates..."):
+            try:
+                loaded = self._fetch_openvpn_item()
+                templates = self._extract_template_names(loaded)
+                options = [(name, name) for name in templates]
+                self.app.call_from_thread(self._update_template_select, options)
 
-            labels = self._extract_field_labels(loaded)
-            has_dh = 'dh_parameters' in labels
-            has_ta = 'static_key' in labels
-            self.app.call_from_thread(self._update_gen_buttons, has_dh, has_ta)
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#openvpn-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                labels = self._extract_field_labels(loaded)
+                has_dh = 'dh_parameters' in labels
+                has_ta = 'static_key' in labels
+                self.app.call_from_thread(self._update_gen_buttons, has_dh, has_ta)
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#openvpn-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))
 
     def _update_template_select(self, options: list[tuple[str, str]]) -> None:
         select = self.query_one("#server-template-select", Select)
@@ -256,26 +253,23 @@ class OpenVPNScreen(TabbedViewMixin, Screen):
     @work(thread=True, exclusive=True, group="op")
     def _load_template_content(self, template_name: str) -> None:
         """Fetch a specific template's content and populate the editor."""
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Loading template '{template_name}'...")
-        try:
-            from opca.constants import DEFAULT_OP_CONF
-            ctx = self.app.tui_context
-            url = ctx.op.mk_url(
-                item_title=DEFAULT_OP_CONF["openvpn_title"],
-                value_key=f"template/{template_name}",
-            )
-            result = ctx.op.read_item(url)
-            if result.returncode == 0:
-                self.app.call_from_thread(self._set_editor_content, result.stdout)
-            else:
+        with op_status_context(self, f"Loading template '{template_name}'..."):
+            try:
+                from opca.constants import DEFAULT_OP_CONF
+                ctx = self.app.tui_context
+                url = ctx.op.mk_url(
+                    item_title=DEFAULT_OP_CONF["openvpn_title"],
+                    value_key=f"template/{template_name}",
+                )
+                result = ctx.op.read_item(url)
+                if result.returncode == 0:
+                    self.app.call_from_thread(self._set_editor_content, result.stdout)
+                else:
+                    log_panel = self.query_one("#openvpn-log", LogPanel)
+                    self.app.call_from_thread(log_panel.log_error, f"Template '{template_name}' not found")
+            except (Exception, SystemExit) as e:
                 log_panel = self.query_one("#openvpn-log", LogPanel)
-                self.app.call_from_thread(log_panel.log_error, f"Template '{template_name}' not found")
-        except (Exception, SystemExit) as e:
-            log_panel = self.query_one("#openvpn-log", LogPanel)
-            self.app.call_from_thread(log_panel.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                self.app.call_from_thread(log_panel.log_error, str(e))
 
     def _set_editor_content(self, content: str) -> None:
         editor = self.query_one("#server-template-editor", TextArea)
@@ -347,39 +341,36 @@ class OpenVPNScreen(TabbedViewMixin, Screen):
     @work(thread=True, exclusive=True, group="op")
     def _load_client_data(self) -> None:
         """Populate the Client tab dropdowns: templates and VPN client certs."""
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Loading client data...")
-        try:
-            # Load templates
-            loaded = self._fetch_openvpn_item()
-            templates = self._extract_template_names(loaded)
-            options = [(name, name) for name in templates]
-            self.app.call_from_thread(self._update_client_templates, options)
+        with op_status_context(self, "Loading client data..."):
+            try:
+                # Load templates
+                loaded = self._fetch_openvpn_item()
+                templates = self._extract_template_names(loaded)
+                options = [(name, name) for name in templates]
+                self.app.call_from_thread(self._update_client_templates, options)
 
-            # Load VPN client certificates
-            ctx = self.app.tui_context
-            if ctx.has_ca:
-                db = ctx.ca.ca_database
-                db.process_ca_database()
-                vpn_clients = []
-                for serial in sorted(db.certs_valid, key=int):
-                    cert = db.query_cert(cert_info={"serial": int(serial)})
-                    if not cert:
-                        continue
-                    title = cert.get("title", cert.get("cn", ""))
-                    try:
-                        bundle = ctx.ca.retrieve_certbundle(title)
-                        if bundle.get_type() == "vpnclient":
-                            cn = cert.get("cn", title)
-                            vpn_clients.append((cn, cn))
-                    except (Exception, SystemExit):
-                        continue
-                self.app.call_from_thread(self._update_client_cn, vpn_clients)
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#openvpn-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                # Load VPN client certificates
+                ctx = self.app.tui_context
+                if ctx.has_ca:
+                    db = ctx.ca.ca_database
+                    db.process_ca_database()
+                    vpn_clients = []
+                    for serial in sorted(db.certs_valid, key=int):
+                        cert = db.query_cert(cert_info={"serial": int(serial)})
+                        if not cert:
+                            continue
+                        title = cert.get("title", cert.get("cn", ""))
+                        try:
+                            bundle = ctx.ca.retrieve_certbundle(title)
+                            if bundle.get_type() == "vpnclient":
+                                cn = cert.get("cn", title)
+                                vpn_clients.append((cn, cn))
+                        except (Exception, SystemExit):
+                            continue
+                    self.app.call_from_thread(self._update_client_cn, vpn_clients)
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#openvpn-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))
 
     def _update_client_templates(self, options: list[tuple[str, str]]) -> None:
         select = self.query_one("#client-template-select", Select)
@@ -431,27 +422,24 @@ class OpenVPNScreen(TabbedViewMixin, Screen):
     @work(thread=True, exclusive=True, group="op")
     def _load_profiles(self) -> None:
         """List VPN_ documents from 1Password (single API call)."""
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Loading profiles...")
-        try:
-            ctx = self.app.tui_context
-            result = ctx.op.item_list(categories="Document")
-            items = json.loads(result.stdout)
-            rows = []
-            for item in items:
-                title = item.get("title", "")
-                if not title.startswith("VPN_"):
-                    continue
-                cn = title[4:]  # strip VPN_ prefix
-                created = item.get("created_at", "")[:10]
-                rows.append((cn, created))
-            rows.sort(key=lambda r: r[0])
-            self.app.call_from_thread(self._update_profile_table, rows)
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#openvpn-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Loading profiles..."):
+            try:
+                ctx = self.app.tui_context
+                result = ctx.op.item_list(categories="Document")
+                items = json.loads(result.stdout)
+                rows = []
+                for item in items:
+                    title = item.get("title", "")
+                    if not title.startswith("VPN_"):
+                        continue
+                    cn = title[4:]  # strip VPN_ prefix
+                    created = item.get("created_at", "")[:10]
+                    rows.append((cn, created))
+                rows.sort(key=lambda r: r[0])
+                self.app.call_from_thread(self._update_profile_table, rows)
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#openvpn-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))
 
     def _update_profile_table(self, rows: list[tuple[str, str]]) -> None:
         table = self.query_one("#profile-table", DataTable)
@@ -487,25 +475,22 @@ class OpenVPNScreen(TabbedViewMixin, Screen):
             self.app.call_from_thread(log.log_error, "Enter a destination vault")
             return
 
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Sending VPN_{cn} to {dest_vault}...")
-        log = self.query_one("#openvpn-log", LogPanel)
-        try:
-            ctx = self.app.tui_context
-            item_title = f"VPN_{cn}"
-            result = ctx.op.get_document(item_title)
-            content = result.stdout
-            ctx.op.store_document(
-                item_title=item_title,
-                filename=f"{cn}.ovpn",
-                str_in=content,
-                vault=dest_vault,
-            )
-            self.app.call_from_thread(log.log_success, f"Sent {item_title} to vault '{dest_vault}'")
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, f"Sending VPN_{cn} to {dest_vault}..."):
+            log = self.query_one("#openvpn-log", LogPanel)
+            try:
+                ctx = self.app.tui_context
+                item_title = f"VPN_{cn}"
+                result = ctx.op.get_document(item_title)
+                content = result.stdout
+                ctx.op.store_document(
+                    item_title=item_title,
+                    filename=f"{cn}.ovpn",
+                    str_in=content,
+                    vault=dest_vault,
+                )
+                self.app.call_from_thread(log.log_success, f"Sent {item_title} to vault '{dest_vault}'")
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))
 
     # -----------------------------------------
     # Server tab: DH / TA generation
@@ -536,17 +521,14 @@ class OpenVPNScreen(TabbedViewMixin, Screen):
     # -----------------------------------------
     def _run_handler(self, module_path: str, handler_name: str, subcommand: str = "", **extra_args: object) -> None:
         import importlib
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Running {handler_name}...")
-        log = self.query_one("#openvpn-log", LogPanel)
-        try:
-            mod = importlib.import_module(f"opca.commands.{module_path}")
-            handler = getattr(mod, handler_name)
-            ctx = self.app.tui_context
-            app = ctx.make_app(command="openvpn", subcommand=subcommand, **extra_args)
-            code, output = capture_handler(handler, app)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, f"Running {handler_name}..."):
+            log = self.query_one("#openvpn-log", LogPanel)
+            try:
+                mod = importlib.import_module(f"opca.commands.{module_path}")
+                handler = getattr(mod, handler_name)
+                ctx = self.app.tui_context
+                app = ctx.make_app(command="openvpn", subcommand=subcommand, **extra_args)
+                code, output = capture_handler(handler, app)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))

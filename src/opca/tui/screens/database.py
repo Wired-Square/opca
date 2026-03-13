@@ -14,7 +14,7 @@ from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
-from opca.tui.workers import capture_handler
+from opca.tui.workers import capture_handler, op_status_context
 
 
 class DatabaseScreen(TabbedViewMixin, Screen):
@@ -94,33 +94,29 @@ class DatabaseScreen(TabbedViewMixin, Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _load_config(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Loading config...")
-        ctx = self.app.tui_context
-        if not ctx.has_ca:
-            self.app.call_from_thread(
-                self.query_one("#db-config", Static).update,
-                "[yellow]No CA found[/yellow]",
-            )
-            self.app.call_from_thread(op_status.hide)
-            return
+        with op_status_context(self, "Loading config..."):
+            ctx = self.app.tui_context
+            if not ctx.has_ca:
+                self.app.call_from_thread(
+                    self.query_one("#db-config", Static).update,
+                    "[yellow]No CA found[/yellow]",
+                )
+                return
 
-        try:
-            config = ctx.ca.ca_database.get_config_attributes()
-            lines = []
-            for key, value in sorted(config.items()):
-                lines.append(f"[bold]{key}:[/bold] {value}")
-            self.app.call_from_thread(
-                self.query_one("#db-config", Static).update,
-                "\n".join(lines),
-            )
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(
-                self.query_one("#db-config", Static).update,
-                f"[red]Error: {e}[/red]",
-            )
-        finally:
-            self.app.call_from_thread(op_status.hide)
+            try:
+                config = ctx.ca.ca_database.get_config_attributes()
+                lines = []
+                for key, value in sorted(config.items()):
+                    lines.append(f"[bold]{key}:[/bold] {value}")
+                self.app.call_from_thread(
+                    self.query_one("#db-config", Static).update,
+                    "\n".join(lines),
+                )
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(
+                    self.query_one("#db-config", Static).update,
+                    f"[red]Error: {e}[/red]",
+                )
 
     @work(thread=True, exclusive=True, group="op")
     def _do_config_set(self) -> None:
@@ -132,75 +128,63 @@ class DatabaseScreen(TabbedViewMixin, Screen):
             self.app.call_from_thread(log.log_error, "Key and value are required")
             return
 
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Setting {key}...")
-        ctx = self.app.tui_context
-        try:
-            ctx.ca.ca_database.update_config({key: value})
-            ctx.ca.store_ca_database()
-            self.app.call_from_thread(log.log_success, f"Set {key} = {value}")
-            self.app.call_from_thread(self._load_config)
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, f"Setting {key}..."):
+            ctx = self.app.tui_context
+            try:
+                ctx.ca.ca_database.update_config({key: value})
+                ctx.ca.store_ca_database()
+                self.app.call_from_thread(log.log_success, f"Set {key} = {value}")
+                self.app.call_from_thread(self._load_config)
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_export(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Exporting database...")
-        ctx = self.app.tui_context
-        log = self.query_one("#db-log", LogPanel)
-        try:
-            sql = ctx.ca.ca_database.export_database()
-            self.app.call_from_thread(log.write, sql.decode("utf-8", errors="replace"))
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Exporting database..."):
+            ctx = self.app.tui_context
+            log = self.query_one("#db-log", LogPanel)
+            try:
+                sql = ctx.ca.ca_database.export_database()
+                self.app.call_from_thread(log.write, sql.decode("utf-8", errors="replace"))
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_upload(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Uploading database...")
-        ctx = self.app.tui_context
-        log = self.query_one("#db-log", LogPanel)
-        try:
-            ok = ctx.ca.upload_ca_database()
-            if ok:
-                self.app.call_from_thread(log.log_success, "Database uploaded")
-            else:
-                self.app.call_from_thread(log.log_error, "Upload failed")
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Uploading database..."):
+            ctx = self.app.tui_context
+            log = self.query_one("#db-log", LogPanel)
+            try:
+                ok = ctx.ca.upload_ca_database()
+                if ok:
+                    self.app.call_from_thread(log.log_success, "Database uploaded")
+                else:
+                    self.app.call_from_thread(log.log_error, "Upload failed")
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_rebuild(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Rebuilding database...")
-        serial_str = self.query_one("#rebuild-serial", Input).value.strip()
-        crl_serial_str = self.query_one("#rebuild-crl-serial", Input).value.strip()
-        log = self.query_one("#db-log", LogPanel)
+        with op_status_context(self, "Rebuilding database..."):
+            serial_str = self.query_one("#rebuild-serial", Input).value.strip()
+            crl_serial_str = self.query_one("#rebuild-crl-serial", Input).value.strip()
+            log = self.query_one("#db-log", LogPanel)
 
-        ctx = self.app.tui_context
-        try:
-            from opca.commands.database.actions import handle_database_rebuild
-            app = ctx.make_app(
-                command="database", subcommand="rebuild",
-                serial=int(serial_str) if serial_str else None,
-                crl_serial=int(crl_serial_str) if crl_serial_str else None,
-                days=None,
-                crl_days=None,
-            )
-            code, output = capture_handler(handle_database_rebuild, app)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
-            if code == 0:
-                ctx.reload_ca()
-                self.app.call_from_thread(log.log_success, "Database rebuilt")
-                self.app.call_from_thread(self._load_config)
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+            ctx = self.app.tui_context
+            try:
+                from opca.commands.database.actions import handle_database_rebuild
+                app = ctx.make_app(
+                    command="database", subcommand="rebuild",
+                    serial=int(serial_str) if serial_str else None,
+                    crl_serial=int(crl_serial_str) if crl_serial_str else None,
+                    days=None,
+                    crl_days=None,
+                )
+                code, output = capture_handler(handle_database_rebuild, app)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+                if code == 0:
+                    ctx.reload_ca()
+                    self.app.call_from_thread(log.log_success, "Database rebuilt")
+                    self.app.call_from_thread(self._load_config)
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))

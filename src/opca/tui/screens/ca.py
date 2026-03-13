@@ -17,6 +17,7 @@ from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
+from opca.tui.workers import op_status_context
 
 
 class CAScreen(TabbedViewMixin, Screen):
@@ -148,52 +149,50 @@ class CAScreen(TabbedViewMixin, Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _load_ca_info(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
         log = self.query_one("#ca-log", LogPanel)
-        self.app.call_from_thread(op_status.show, "Loading CA info...")
         self.app.call_from_thread(log.clear)
-        try:
-            ctx = self.app.tui_context
-            if not ctx.has_ca:
-                self.app.call_from_thread(
-                    log.log_warning,
-                    "No CA found in this vault. Use the 'Init' tab to create one.",
+        with op_status_context(self, "Loading CA info..."):
+            try:
+                ctx = self.app.tui_context
+                if not ctx.has_ca:
+                    self.app.call_from_thread(
+                        log.log_warning,
+                        "No CA found in this vault. Use the 'Init' tab to create one.",
+                    )
+                    return
+
+                ca = ctx.ca
+                config = ca.ca_database.get_config_attributes()
+
+                subject = ca.ca_certbundle.get_certificate_attrib("subject")
+                not_after = ca.ca_certbundle.get_certificate_attrib("not_after")
+                not_before = ca.ca_certbundle.get_certificate_attrib("not_before")
+                key_size = ca.ca_certbundle.get_public_key_size()
+                key_type = ca.ca_certbundle.get_public_key_type()
+
+                db = ca.ca_database
+                db.process_ca_database()
+
+                info = (
+                    f"[bold]Subject:[/bold]       {subject}\n"
+                    f"[bold]Key:[/bold]           {key_type} {key_size}-bit\n"
+                    f"[bold]Valid From:[/bold]    {not_before}\n"
+                    f"[bold]Valid Until:[/bold]   {not_after}\n"
+                    f"[bold]Next Serial:[/bold]   {config.get('next_serial', '?')}\n"
+                    f"[bold]Certificates:[/bold]  {db.count_certs()} total "
+                    f"([green]{len(db.certs_valid)}[/green] valid, "
+                    f"[yellow]{len(db.certs_expires_soon)}[/yellow] expiring, "
+                    f"[dim]{len(db.certs_expired)}[/dim] expired, "
+                    f"[red]{len(db.certs_revoked)}[/red] revoked)\n"
+                    f"[bold]Organisation:[/bold] {config.get('org', '-')}\n"
+                    f"[bold]CA URL:[/bold]        {config.get('ca_url', '-')}\n"
+                    f"[bold]CRL URL:[/bold]       {config.get('crl_url', '-')}\n"
                 )
-                return
-
-            ca = ctx.ca
-            config = ca.ca_database.get_config_attributes()
-
-            subject = ca.ca_certbundle.get_certificate_attrib("subject")
-            not_after = ca.ca_certbundle.get_certificate_attrib("not_after")
-            not_before = ca.ca_certbundle.get_certificate_attrib("not_before")
-            key_size = ca.ca_certbundle.get_public_key_size()
-            key_type = ca.ca_certbundle.get_public_key_type()
-
-            db = ca.ca_database
-            db.process_ca_database()
-
-            info = (
-                f"[bold]Subject:[/bold]       {subject}\n"
-                f"[bold]Key:[/bold]           {key_type} {key_size}-bit\n"
-                f"[bold]Valid From:[/bold]    {not_before}\n"
-                f"[bold]Valid Until:[/bold]   {not_after}\n"
-                f"[bold]Next Serial:[/bold]   {config.get('next_serial', '?')}\n"
-                f"[bold]Certificates:[/bold]  {db.count_certs()} total "
-                f"([green]{len(db.certs_valid)}[/green] valid, "
-                f"[yellow]{len(db.certs_expires_soon)}[/yellow] expiring, "
-                f"[dim]{len(db.certs_expired)}[/dim] expired, "
-                f"[red]{len(db.certs_revoked)}[/red] revoked)\n"
-                f"[bold]Organisation:[/bold] {config.get('org', '-')}\n"
-                f"[bold]CA URL:[/bold]        {config.get('ca_url', '-')}\n"
-                f"[bold]CRL URL:[/bold]       {config.get('crl_url', '-')}\n"
-            )
-            self.app.call_from_thread(log.write, info)
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, f"Error loading CA info: {e}")
-        finally:
-            self.app.call_from_thread(self._update_button_states)
-            self.app.call_from_thread(op_status.hide)
+                self.app.call_from_thread(log.write, info)
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, f"Error loading CA info: {e}")
+            finally:
+                self.app.call_from_thread(self._update_button_states)
 
     CONFIG_FIELDS = {
         "ca_url": "#cfg-ca-url",
@@ -210,56 +209,50 @@ class CAScreen(TabbedViewMixin, Screen):
 
     def _load_fields(self, fields: dict[str, str], label: str) -> None:
         """Load config values into Input widgets (runs in worker thread)."""
-        op_status = self.query_one("#op-status", OpStatus)
         log = self.query_one("#ca-log", LogPanel)
-        self.app.call_from_thread(op_status.show, f"Loading {label}...")
         self.app.call_from_thread(log.clear)
-        try:
-            ctx = self.app.tui_context
-            if not ctx.has_ca:
-                self.app.call_from_thread(
-                    log.log_warning,
-                    "No CA found. Use the 'Init' tab to create one.",
-                )
-                return
+        with op_status_context(self, f"Loading {label}..."):
+            try:
+                ctx = self.app.tui_context
+                if not ctx.has_ca:
+                    self.app.call_from_thread(
+                        log.log_warning,
+                        "No CA found. Use the 'Init' tab to create one.",
+                    )
+                    return
 
-            config = ctx.ca.ca_database.get_config_attributes()
-            for key, widget_id in fields.items():
-                value = str(config.get(key, "") or "")
-                self.app.call_from_thread(
-                    setattr, self.query_one(widget_id, Input), "value", value
-                )
-            self.app.call_from_thread(log.log_info, f"{label} loaded")
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, f"Error loading {label}: {e}")
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                config = ctx.ca.ca_database.get_config_attributes()
+                for key, widget_id in fields.items():
+                    value = str(config.get(key, "") or "")
+                    self.app.call_from_thread(
+                        setattr, self.query_one(widget_id, Input), "value", value
+                    )
+                self.app.call_from_thread(log.log_info, f"{label} loaded")
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, f"Error loading {label}: {e}")
 
     def _save_fields(self, fields: dict[str, str], label: str) -> None:
         """Save Input widget values to config (runs in worker thread)."""
-        op_status = self.query_one("#op-status", OpStatus)
         log = self.query_one("#ca-log", LogPanel)
-        self.app.call_from_thread(op_status.show, f"Saving {label}...")
-        try:
-            ctx = self.app.tui_context
-            if not ctx.has_ca:
-                self.app.call_from_thread(
-                    log.log_warning,
-                    "No CA found. Use the 'Init' tab to create one.",
-                )
-                return
+        with op_status_context(self, f"Saving {label}..."):
+            try:
+                ctx = self.app.tui_context
+                if not ctx.has_ca:
+                    self.app.call_from_thread(
+                        log.log_warning,
+                        "No CA found. Use the 'Init' tab to create one.",
+                    )
+                    return
 
-            updates = {}
-            for key, widget_id in fields.items():
-                updates[key] = self.query_one(widget_id, Input).value.strip()
+                updates = {}
+                for key, widget_id in fields.items():
+                    updates[key] = self.query_one(widget_id, Input).value.strip()
 
-            ctx.ca.ca_database.update_config(updates)
-            ctx.ca.store_ca_database()
-            self.app.call_from_thread(log.log_success, f"{label} saved")
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, f"Error saving {label}: {e}")
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                ctx.ca.ca_database.update_config(updates)
+                ctx.ca.store_ca_database()
+                self.app.call_from_thread(log.log_success, f"{label} saved")
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, f"Error saving {label}: {e}")
 
     @work(thread=True, exclusive=True, group="op")
     def _load_config(self) -> None:
@@ -292,44 +285,41 @@ class CAScreen(TabbedViewMixin, Screen):
             )
             return
 
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Initialising CA...")
         self.app.call_from_thread(
             self.query_one("#init-status", Static).update,
             "Initialising CA...",
         )
 
         ctx = self.app.tui_context
-        try:
-            from opca.services.ca import CertificateAuthority
+        with op_status_context(self, "Initialising CA..."):
+            try:
+                from opca.services.ca import CertificateAuthority
 
-            ca_config = {
-                "command": "init",
-                "cn": cn,
-                "org": org,
-                "ca_days": int(ca_days),
-                "days": int(days),
-                "crl_days": int(crl_days),
-                "next_serial": 1,
-                "next_crl_serial": 1,
-                "key_size": DEFAULT_KEY_SIZE["ca"],
-            }
+                ca_config = {
+                    "command": "init",
+                    "cn": cn,
+                    "org": org,
+                    "ca_days": int(ca_days),
+                    "days": int(days),
+                    "crl_days": int(crl_days),
+                    "next_serial": 1,
+                    "next_crl_serial": 1,
+                    "key_size": DEFAULT_KEY_SIZE["ca"],
+                }
 
-            CertificateAuthority(
-                one_password=ctx.op,
-                config=ca_config,
-                op_config=DEFAULT_OP_CONF,
-            )
+                CertificateAuthority(
+                    one_password=ctx.op,
+                    config=ca_config,
+                    op_config=DEFAULT_OP_CONF,
+                )
 
-            ctx.reload_ca()
-            self.app.call_from_thread(self._on_init_done)
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(
-                self.query_one("#init-status", Static).update,
-                f"[red]Error: {e}[/red]",
-            )
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                ctx.reload_ca()
+                self.app.call_from_thread(self._on_init_done)
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(
+                    self.query_one("#init-status", Static).update,
+                    f"[red]Error: {e}[/red]",
+                )
 
     def _on_init_done(self) -> None:
         self.query_one("#init-status", Static).update("")
@@ -354,59 +344,50 @@ class CAScreen(TabbedViewMixin, Screen):
         if not ctx.has_ca:
             return
         export_path = self.query_one("#export-path", Input).value.strip()
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Exporting certificate...")
         log = self.query_one("#ca-log", LogPanel)
-        try:
-            cert_pem = ctx.ca.get_certificate()
-            if export_path:
-                from pathlib import Path
-                Path(export_path).expanduser().write_text(cert_pem)
-                self.app.call_from_thread(
-                    log.log_success, f"Certificate exported to {export_path}"
-                )
-            else:
-                self.app.call_from_thread(log.write, cert_pem)
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Exporting certificate..."):
+            try:
+                cert_pem = ctx.ca.get_certificate()
+                if export_path:
+                    from pathlib import Path
+                    Path(export_path).expanduser().write_text(cert_pem)
+                    self.app.call_from_thread(
+                        log.log_success, f"Certificate exported to {export_path}"
+                    )
+                else:
+                    self.app.call_from_thread(log.write, cert_pem)
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_copy_cert(self) -> None:
         ctx = self.app.tui_context
         if not ctx.has_ca:
             return
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Copying certificate...")
-        try:
-            cert_pem = ctx.ca.get_certificate()
-            cmd = ["pbcopy"] if sys.platform == "darwin" else ["xclip", "-selection", "clipboard"]
-            subprocess.run(cmd, input=cert_pem.encode(), check=True)
-            self.app.call_from_thread(
-                self.notify, "CA certificate copied to clipboard", severity="information"
-            )
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#ca-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Copying certificate..."):
+            try:
+                cert_pem = ctx.ca.get_certificate()
+                cmd = ["pbcopy"] if sys.platform == "darwin" else ["xclip", "-selection", "clipboard"]
+                subprocess.run(cmd, input=cert_pem.encode(), check=True)
+                self.app.call_from_thread(
+                    self.notify, "CA certificate copied to clipboard", severity="information"
+                )
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#ca-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_upload(self) -> None:
         ctx = self.app.tui_context
         if not ctx.has_ca:
             return
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Uploading CA certificate...")
         log = self.query_one("#ca-log", LogPanel)
-        try:
-            ok = ctx.ca.upload_ca_cert()
-            if ok:
-                self.app.call_from_thread(log.log_success, "CA certificate uploaded")
-            else:
-                self.app.call_from_thread(log.log_error, "Upload failed")
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Uploading CA certificate..."):
+            try:
+                ok = ctx.ca.upload_ca_cert()
+                if ok:
+                    self.app.call_from_thread(log.log_success, "CA certificate uploaded")
+                else:
+                    self.app.call_from_thread(log.log_error, "Upload failed")
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))

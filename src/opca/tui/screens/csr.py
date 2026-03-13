@@ -16,9 +16,8 @@ from opca.tui.styles import style_status
 from opca.tui.widgets.file_input import FileInput
 from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
-from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
-from opca.tui.workers import capture_handler
+from opca.tui.workers import capture_handler, op_status_context
 from opca.utils.files import write_bytes
 
 
@@ -45,6 +44,8 @@ class CSRScreen(TabbedViewMixin, Screen):
     VIEWS = ["list", "create", "import", "sign"]
 
     def compose(self) -> ComposeResult:
+        from opca.tui.widgets.op_status import OpStatus
+
         with Vertical():
             yield ScreenHeader("Certificate Signing Requests")
 
@@ -160,21 +161,18 @@ class CSRScreen(TabbedViewMixin, Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _load_csrs(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Loading CSRs...")
-        try:
-            ctx = self.app.tui_context
-            if not ctx.has_ca:
-                self.app.call_from_thread(self._update_csr_table, [])
-                return
+        with op_status_context(self, "Loading CSRs..."):
+            try:
+                ctx = self.app.tui_context
+                if not ctx.has_ca:
+                    self.app.call_from_thread(self._update_csr_table, [])
+                    return
 
-            rows = ctx.ca.ca_database.query_all_csrs()
-            self.app.call_from_thread(self._update_csr_table, rows)
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#csr-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                rows = ctx.ca.ca_database.query_all_csrs()
+                self.app.call_from_thread(self._update_csr_table, rows)
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#csr-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))
 
     def _update_csr_table(self, rows: list) -> None:
         table = self.query_one("#csr-table", DataTable)
@@ -204,37 +202,33 @@ class CSRScreen(TabbedViewMixin, Screen):
             )
             return
 
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Creating CSR for {cn}...")
-
-        try:
-            from opca.commands.csr.actions import handle_csr_create
-            ctx = self.app.tui_context
-            app = ctx.make_app(
-                command="csr", subcommand="create",
-                cn=cn, email=email or None, csr_type=csr_type,
-                country=None, outdir=None,
-            )
-            code, output = capture_handler(handle_csr_create, app)
-            log = self.query_one("#csr-log", LogPanel)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
-            if code == 0:
+        with op_status_context(self, f"Creating CSR for {cn}..."):
+            try:
+                from opca.commands.csr.actions import handle_csr_create
+                ctx = self.app.tui_context
+                app = ctx.make_app(
+                    command="csr", subcommand="create",
+                    cn=cn, email=email or None, csr_type=csr_type,
+                    country=None, outdir=None,
+                )
+                code, output = capture_handler(handle_csr_create, app)
+                log = self.query_one("#csr-log", LogPanel)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+                if code == 0:
+                    self.app.call_from_thread(
+                        self.query_one("#csr-status", Static).update,
+                        f"[green]CSR created for {cn}[/green]",
+                    )
+                else:
+                    self.app.call_from_thread(
+                        self.query_one("#csr-status", Static).update,
+                        "[red]CSR creation failed[/red]",
+                    )
+            except (Exception, SystemExit) as e:
                 self.app.call_from_thread(
                     self.query_one("#csr-status", Static).update,
-                    f"[green]CSR created for {cn}[/green]",
+                    f"[red]Error: {e}[/red]",
                 )
-            else:
-                self.app.call_from_thread(
-                    self.query_one("#csr-status", Static).update,
-                    "[red]CSR creation failed[/red]",
-                )
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(
-                self.query_one("#csr-status", Static).update,
-                f"[red]Error: {e}[/red]",
-            )
-        finally:
-            self.app.call_from_thread(op_status.hide)
 
     @work(thread=True, exclusive=True, group="csr-load")
     def _load_pending_csrs(self) -> None:
@@ -303,24 +297,21 @@ class CSRScreen(TabbedViewMixin, Screen):
             )
             return
 
-        op_status = self.query_one("#op-status", OpStatus)
         label = cn or "certificate"
-        self.app.call_from_thread(op_status.show, f"Importing certificate for {label}...")
-        try:
-            from opca.commands.csr.actions import handle_csr_import
-            ctx = self.app.tui_context
-            app = ctx.make_app(
-                command="csr", subcommand="import",
-                cn=cn, **file_input.as_kwarg("cert_file"),
-            )
-            code, output = capture_handler(handle_csr_import, app)
-            log = self.query_one("#csr-log", LogPanel)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#csr-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, f"Importing certificate for {label}..."):
+            try:
+                from opca.commands.csr.actions import handle_csr_import
+                ctx = self.app.tui_context
+                app = ctx.make_app(
+                    command="csr", subcommand="import",
+                    cn=cn, **file_input.as_kwarg("cert_file"),
+                )
+                code, output = capture_handler(handle_csr_import, app)
+                log = self.query_one("#csr-log", LogPanel)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#csr-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))
 
     def _get_selected_cn(self) -> str | None:
         table = self.query_one("#csr-table", DataTable)
@@ -356,40 +347,36 @@ class CSRScreen(TabbedViewMixin, Screen):
             return
 
         outfile = self.query_one("#export-outfile", Input).value.strip() or None
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Exporting CSR for {cn}...")
+        with op_status_context(self, f"Exporting CSR for {cn}..."):
+            try:
+                csr_pem = self._fetch_csr_pem(cn)
+                if not csr_pem:
+                    self.app.call_from_thread(
+                        self.query_one("#csr-status", Static).update,
+                        f"[red]CSR not found for {cn}[/red]",
+                    )
+                    return
 
-        try:
-            csr_pem = self._fetch_csr_pem(cn)
-            if not csr_pem:
+                log = self.query_one("#csr-log", LogPanel)
+                if outfile:
+                    write_bytes(outfile, csr_pem.encode("utf-8"),
+                                overwrite=False, create_dirs=False, atomic=True, mode=0o644)
+                    self.app.call_from_thread(
+                        self.query_one("#csr-status", Static).update,
+                        f"[green]CSR written to {outfile}[/green]",
+                    )
+                    self.app.call_from_thread(self.notify, f"CSR written to {outfile}", severity="information")
+                else:
+                    self.app.call_from_thread(log.write, csr_pem)
+                    self.app.call_from_thread(
+                        self.query_one("#csr-status", Static).update,
+                        "[green]CSR exported[/green]",
+                    )
+            except (Exception, SystemExit) as e:
                 self.app.call_from_thread(
                     self.query_one("#csr-status", Static).update,
-                    f"[red]CSR not found for {cn}[/red]",
+                    f"[red]Export failed: {e}[/red]",
                 )
-                return
-
-            log = self.query_one("#csr-log", LogPanel)
-            if outfile:
-                write_bytes(outfile, csr_pem.encode("utf-8"),
-                            overwrite=False, create_dirs=False, atomic=True, mode=0o644)
-                self.app.call_from_thread(
-                    self.query_one("#csr-status", Static).update,
-                    f"[green]CSR written to {outfile}[/green]",
-                )
-                self.app.call_from_thread(self.notify, f"CSR written to {outfile}", severity="information")
-            else:
-                self.app.call_from_thread(log.write, csr_pem)
-                self.app.call_from_thread(
-                    self.query_one("#csr-status", Static).update,
-                    "[green]CSR exported[/green]",
-                )
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(
-                self.query_one("#csr-status", Static).update,
-                f"[red]Export failed: {e}[/red]",
-            )
-        finally:
-            self.app.call_from_thread(op_status.hide)
 
     @work(thread=True, exclusive=True, group="op")
     def _do_copy_csr(self) -> None:
@@ -401,24 +388,20 @@ class CSRScreen(TabbedViewMixin, Screen):
             )
             return
 
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Copying CSR for {cn}...")
+        with op_status_context(self, f"Copying CSR for {cn}..."):
+            try:
+                csr_pem = self._fetch_csr_pem(cn)
+                if not csr_pem:
+                    self.app.call_from_thread(
+                        self.query_one("#csr-status", Static).update,
+                        f"[red]CSR not found for {cn}[/red]",
+                    )
+                    return
 
-        try:
-            csr_pem = self._fetch_csr_pem(cn)
-            if not csr_pem:
-                self.app.call_from_thread(
-                    self.query_one("#csr-status", Static).update,
-                    f"[red]CSR not found for {cn}[/red]",
-                )
-                return
-
-            copy_to_clipboard(csr_pem.encode("utf-8"))
-            self.app.call_from_thread(self.notify, "CSR PEM copied to clipboard", severity="information")
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(self.notify, f"Copy failed: {e}", severity="error")
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                copy_to_clipboard(csr_pem.encode("utf-8"))
+                self.app.call_from_thread(self.notify, "CSR PEM copied to clipboard", severity="information")
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(self.notify, f"Copy failed: {e}", severity="error")
 
     @work(thread=True, exclusive=True, group="op")
     def _do_sign(self) -> None:
@@ -433,36 +416,32 @@ class CSRScreen(TabbedViewMixin, Screen):
             )
             return
 
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Signing CSR...")
+        with op_status_context(self, "Signing CSR..."):
+            try:
+                from opca.commands.csr.actions import handle_csr_sign
+                ctx = self.app.tui_context
 
-        try:
-            from opca.commands.csr.actions import handle_csr_sign
-            ctx = self.app.tui_context
-
-            # Pass CSR as inline PEM since we already have the bytes
-            app = ctx.make_app(
-                command="csr", subcommand="sign",
-                csr_file=None, csr_pem=csr_content.decode("utf-8"),
-                csr_type=csr_type, cn=None,
-            )
-            code, output = capture_handler(handle_csr_sign, app)
-            log = self.query_one("#csr-log", LogPanel)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
-            if code == 0:
+                # Pass CSR as inline PEM since we already have the bytes
+                app = ctx.make_app(
+                    command="csr", subcommand="sign",
+                    csr_file=None, csr_pem=csr_content.decode("utf-8"),
+                    csr_type=csr_type, cn=None,
+                )
+                code, output = capture_handler(handle_csr_sign, app)
+                log = self.query_one("#csr-log", LogPanel)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+                if code == 0:
+                    self.app.call_from_thread(
+                        self.query_one("#csr-status", Static).update,
+                        "[green]CSR signed successfully[/green]",
+                    )
+                else:
+                    self.app.call_from_thread(
+                        self.query_one("#csr-status", Static).update,
+                        "[red]CSR signing failed[/red]",
+                    )
+            except (Exception, SystemExit) as e:
                 self.app.call_from_thread(
                     self.query_one("#csr-status", Static).update,
-                    "[green]CSR signed successfully[/green]",
+                    f"[red]Error: {e}[/red]",
                 )
-            else:
-                self.app.call_from_thread(
-                    self.query_one("#csr-status", Static).update,
-                    "[red]CSR signing failed[/red]",
-                )
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(
-                self.query_one("#csr-status", Static).update,
-                f"[red]Error: {e}[/red]",
-            )
-        finally:
-            self.app.call_from_thread(op_status.hide)

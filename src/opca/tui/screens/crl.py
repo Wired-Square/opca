@@ -15,6 +15,7 @@ from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
+from opca.tui.workers import op_status_context
 
 
 class CRLScreen(Screen):
@@ -97,33 +98,29 @@ class CRLScreen(Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _load_info(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
         log = self.query_one("#crl-log", LogPanel)
-        self.app.call_from_thread(op_status.show, "Loading CRL info...")
-        self.app.call_from_thread(log.clear)
+        with op_status_context(self, "Loading CRL info..."):
+            self.app.call_from_thread(log.clear)
 
-        ctx = self.app.tui_context
-        if not ctx.has_ca:
-            self.app.call_from_thread(
-                log.log_warning, "No CA found",
-            )
-            self.app.call_from_thread(op_status.hide)
-            return
-
-        try:
-            crl_info = ctx.ca.get_crl_info()
-            if not crl_info:
+            ctx = self.app.tui_context
+            if not ctx.has_ca:
                 self.app.call_from_thread(
-                    log.log_warning,
-                    "No CRL found. Click 'Generate' to create one.",
+                    log.log_warning, "No CA found",
                 )
                 return
 
-            self.app.call_from_thread(log.write, self._format_crl_info(crl_info))
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, f"Error: {e}")
-        finally:
-            self.app.call_from_thread(op_status.hide)
+            try:
+                crl_info = ctx.ca.get_crl_info()
+                if not crl_info:
+                    self.app.call_from_thread(
+                        log.log_warning,
+                        "No CRL found. Click 'Generate' to create one.",
+                    )
+                    return
+
+                self.app.call_from_thread(log.write, self._format_crl_info(crl_info))
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, f"Error: {e}")
 
     @staticmethod
     def _format_crl_info(crl_info: dict) -> str:
@@ -147,42 +144,36 @@ class CRLScreen(Screen):
     def _do_copy(self) -> None:
         fmt = str(self.query_one("#fmt-select", Select).value)
         fmt_label = fmt.upper()
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Copying CRL {fmt_label} to clipboard...")
-        ctx = self.app.tui_context
-        try:
-            crl_bytes = ctx.ca.get_crl_bytes(fmt=fmt)
-            if fmt == "pem":
-                clip_data = crl_bytes
-            else:
-                import base64
-                clip_data = base64.b64encode(crl_bytes)
-            cmd = ["pbcopy"] if sys.platform == "darwin" else ["xclip", "-selection", "clipboard"]
-            subprocess.run(cmd, input=clip_data, check=True)
-            note = " (base64-encoded)" if fmt != "pem" else ""
-            self.app.call_from_thread(
-                self.notify, f"CRL {fmt_label}{note} copied to clipboard", severity="information"
-            )
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#crl-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, f"Copying CRL {fmt_label} to clipboard..."):
+            ctx = self.app.tui_context
+            try:
+                crl_bytes = ctx.ca.get_crl_bytes(fmt=fmt)
+                if fmt == "pem":
+                    clip_data = crl_bytes
+                else:
+                    import base64
+                    clip_data = base64.b64encode(crl_bytes)
+                cmd = ["pbcopy"] if sys.platform == "darwin" else ["xclip", "-selection", "clipboard"]
+                subprocess.run(cmd, input=clip_data, check=True)
+                note = " (base64-encoded)" if fmt != "pem" else ""
+                self.app.call_from_thread(
+                    self.notify, f"CRL {fmt_label}{note} copied to clipboard", severity="information"
+                )
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#crl-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_create(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Generating CRL...")
         log = self.query_one("#crl-log", LogPanel)
         ctx = self.app.tui_context
-        try:
-            ctx.ca.generate_crl()
-            self.app.call_from_thread(log.log_success, "CRL generated")
-            self._load_info_inner()
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Generating CRL..."):
+            try:
+                ctx.ca.generate_crl()
+                self.app.call_from_thread(log.log_success, "CRL generated")
+                self._load_info_inner()
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))
 
     def _load_info_inner(self) -> None:
         """Reload CRL info into LogPanel (called from worker thread)."""
@@ -199,45 +190,39 @@ class CRLScreen(Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _do_export(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Exporting CRL...")
         log = self.query_one("#crl-log", LogPanel)
         fmt = str(self.query_one("#fmt-select", Select).value)
         outfile = self.query_one("#export-file", Input).value.strip() or None
         ctx = self.app.tui_context
 
-        try:
-            crl_bytes = ctx.ca.get_crl_bytes(fmt=fmt)
-            if outfile:
-                from opca.utils.files import write_bytes
-                write_bytes(outfile, crl_bytes, overwrite=False, create_dirs=False, atomic=True, mode=0o644)
-                self.app.call_from_thread(log.log_success, f"CRL exported to {outfile}")
-            else:
-                if fmt == "pem":
-                    self.app.call_from_thread(log.write, crl_bytes.decode("utf-8", errors="replace"))
+        with op_status_context(self, "Exporting CRL..."):
+            try:
+                crl_bytes = ctx.ca.get_crl_bytes(fmt=fmt)
+                if outfile:
+                    from opca.utils.files import write_bytes
+                    write_bytes(outfile, crl_bytes, overwrite=False, create_dirs=False, atomic=True, mode=0o644)
+                    self.app.call_from_thread(log.log_success, f"CRL exported to {outfile}")
                 else:
-                    self.app.call_from_thread(
-                        log.log_info,
-                        f"DER CRL ({len(crl_bytes)} bytes) — specify a file to export",
-                    )
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                    if fmt == "pem":
+                        self.app.call_from_thread(log.write, crl_bytes.decode("utf-8", errors="replace"))
+                    else:
+                        self.app.call_from_thread(
+                            log.log_info,
+                            f"DER CRL ({len(crl_bytes)} bytes) — specify a file to export",
+                        )
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_upload(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Uploading CRL...")
         log = self.query_one("#crl-log", LogPanel)
         ctx = self.app.tui_context
-        try:
-            ok = ctx.ca.upload_crl()
-            if ok:
-                self.app.call_from_thread(log.log_success, "CRL uploaded")
-            else:
-                self.app.call_from_thread(log.log_error, "CRL upload failed")
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Uploading CRL..."):
+            try:
+                ok = ctx.ca.upload_crl()
+                if ok:
+                    self.app.call_from_thread(log.log_success, "CRL uploaded")
+                else:
+                    self.app.call_from_thread(log.log_error, "CRL upload failed")
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log.log_error, str(e))

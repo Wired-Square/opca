@@ -13,6 +13,7 @@ from opca.tui.screens.password import PasswordModal, PasswordResult
 from opca.services.one_password import Op
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
+from opca.tui.workers import op_status_context
 from opca.utils.files import write_bytes
 
 
@@ -127,41 +128,37 @@ class CertExportScreen(Screen):
         with_key = self.query_one("#with-key-check", Checkbox).value
         outfile = self.query_one("#outfile-input", Input).value.strip() or None
 
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Exporting PEM...")
+        with op_status_context(self, "Exporting PEM..."):
+            ctx = self.app.tui_context
+            try:
+                bundle = self._get_bundle(ctx)
+                if bundle is None:
+                    self.app.call_from_thread(self._show_error, "Certificate not found")
+                    return
 
-        ctx = self.app.tui_context
-        try:
-            bundle = self._get_bundle(ctx)
-            if bundle is None:
-                self.app.call_from_thread(self._show_error, "Certificate not found")
-                return
+                cert_pem = bundle.get_certificate(pem_format=True)
+                key_pem = bundle.get_private_key() if with_key else None
 
-            cert_pem = bundle.get_certificate(pem_format=True)
-            key_pem = bundle.get_private_key() if with_key else None
+                self._cert_pem = cert_pem
+                self._key_pem = key_pem
 
-            self._cert_pem = cert_pem
-            self._key_pem = key_pem
-
-            if outfile:
-                write_bytes(outfile, cert_pem.encode("utf-8"),
-                            overwrite=False, create_dirs=False, atomic=True, mode=0o644)
-                if key_pem:
-                    key_file = outfile.replace(".pem", ".key").replace(".crt", ".key")
-                    if key_file == outfile:
-                        key_file = outfile + ".key"
-                    write_bytes(key_file, key_pem.encode("utf-8"),
-                                overwrite=False, create_dirs=False, atomic=True, mode=0o600)
-                self.app.call_from_thread(self._show_success, f"Written to {outfile}")
-            else:
-                output = cert_pem
-                if key_pem:
-                    output += "\n" + key_pem
-                self.app.call_from_thread(self._show_output, output)
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(self._show_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                if outfile:
+                    write_bytes(outfile, cert_pem.encode("utf-8"),
+                                overwrite=False, create_dirs=False, atomic=True, mode=0o644)
+                    if key_pem:
+                        key_file = outfile.replace(".pem", ".key").replace(".crt", ".key")
+                        if key_file == outfile:
+                            key_file = outfile + ".key"
+                        write_bytes(key_file, key_pem.encode("utf-8"),
+                                    overwrite=False, create_dirs=False, atomic=True, mode=0o600)
+                    self.app.call_from_thread(self._show_success, f"Written to {outfile}")
+                else:
+                    output = cert_pem
+                    if key_pem:
+                        output += "\n" + key_pem
+                    self.app.call_from_thread(self._show_output, output)
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(self._show_error, str(e))
 
     def _export_pkcs12(self, result: PasswordResult | None) -> None:
         if result is None:
@@ -172,65 +169,58 @@ class CertExportScreen(Screen):
     def _do_export_pkcs12(self, result: PasswordResult) -> None:
         outfile = self.query_one("#outfile-input", Input).value.strip() or None
 
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Exporting PKCS#12...")
-
-        ctx = self.app.tui_context
-        try:
-            bundle = self._get_bundle(ctx)
-            if bundle is None:
-                self.app.call_from_thread(self._show_error, "Certificate not found")
-                return
-
-            p12_bytes = bundle.export_pkcs12(password=result.password, name=self._cn)
-            self._p12_bytes = p12_bytes
-
-            if outfile:
-                write_bytes(outfile, p12_bytes,
-                            overwrite=False, create_dirs=False, atomic=True, mode=0o600)
-                self.app.call_from_thread(self._show_success, f"PKCS#12 written to {outfile}")
-            else:
-                import base64
-                b64 = base64.b64encode(p12_bytes).decode("ascii")
-                self.app.call_from_thread(self._show_output, f"Base64 PKCS#12:\n{b64}")
-
-            stored, msg = _store_password_if_requested(result, ctx)
-            if msg:
-                severity = "information" if stored else "warning"
-                self.app.call_from_thread(self.notify, msg, severity=severity)
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(self._show_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
-
-    @work(thread=True, exclusive=True, group="op")
-    def _do_copy(self, what: str) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Copying {what}...")
-        ctx = self.app.tui_context
-        try:
-            # Fetch if not already cached
-            if self._cert_pem is None:
+        with op_status_context(self, "Exporting PKCS#12..."):
+            ctx = self.app.tui_context
+            try:
                 bundle = self._get_bundle(ctx)
                 if bundle is None:
                     self.app.call_from_thread(self._show_error, "Certificate not found")
                     return
-                self._cert_pem = bundle.get_certificate(pem_format=True)
-                self._key_pem = bundle.get_private_key()
 
-            if what == "cert":
-                copy_to_clipboard(self._cert_pem.encode("utf-8"))
-                self.app.call_from_thread(self.notify, "Certificate PEM copied to clipboard", severity="information")
-            elif what == "key":
-                if not self._key_pem:
-                    self.app.call_from_thread(self._show_error, "No private key available")
-                    return
-                copy_to_clipboard(self._key_pem.encode("utf-8"))
-                self.app.call_from_thread(self.notify, "Private key copied to clipboard", severity="information")
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(self.notify, f"Copy failed: {e}", severity="error")
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                p12_bytes = bundle.export_pkcs12(password=result.password, name=self._cn)
+                self._p12_bytes = p12_bytes
+
+                if outfile:
+                    write_bytes(outfile, p12_bytes,
+                                overwrite=False, create_dirs=False, atomic=True, mode=0o600)
+                    self.app.call_from_thread(self._show_success, f"PKCS#12 written to {outfile}")
+                else:
+                    import base64
+                    b64 = base64.b64encode(p12_bytes).decode("ascii")
+                    self.app.call_from_thread(self._show_output, f"Base64 PKCS#12:\n{b64}")
+
+                stored, msg = _store_password_if_requested(result, ctx)
+                if msg:
+                    severity = "information" if stored else "warning"
+                    self.app.call_from_thread(self.notify, msg, severity=severity)
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(self._show_error, str(e))
+
+    @work(thread=True, exclusive=True, group="op")
+    def _do_copy(self, what: str) -> None:
+        with op_status_context(self, f"Copying {what}..."):
+            ctx = self.app.tui_context
+            try:
+                # Fetch if not already cached
+                if self._cert_pem is None:
+                    bundle = self._get_bundle(ctx)
+                    if bundle is None:
+                        self.app.call_from_thread(self._show_error, "Certificate not found")
+                        return
+                    self._cert_pem = bundle.get_certificate(pem_format=True)
+                    self._key_pem = bundle.get_private_key()
+
+                if what == "cert":
+                    copy_to_clipboard(self._cert_pem.encode("utf-8"))
+                    self.app.call_from_thread(self.notify, "Certificate PEM copied to clipboard", severity="information")
+                elif what == "key":
+                    if not self._key_pem:
+                        self.app.call_from_thread(self._show_error, "No private key available")
+                        return
+                    copy_to_clipboard(self._key_pem.encode("utf-8"))
+                    self.app.call_from_thread(self.notify, "Private key copied to clipboard", severity="information")
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(self.notify, f"Copy failed: {e}", severity="error")
 
     def _copy_pkcs12(self, result: PasswordResult | None) -> None:
         if result is None:
@@ -239,31 +229,28 @@ class CertExportScreen(Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _do_copy_pkcs12(self, result: PasswordResult) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Copying PKCS#12...")
-        ctx = self.app.tui_context
-        try:
-            if self._p12_bytes is None:
-                bundle = self._get_bundle(ctx)
-                if bundle is None:
-                    self.app.call_from_thread(self._show_error, "Certificate not found")
-                    return
-                self._p12_bytes = bundle.export_pkcs12(password=result.password, name=self._cn)
+        with op_status_context(self, "Copying PKCS#12..."):
+            ctx = self.app.tui_context
+            try:
+                if self._p12_bytes is None:
+                    bundle = self._get_bundle(ctx)
+                    if bundle is None:
+                        self.app.call_from_thread(self._show_error, "Certificate not found")
+                        return
+                    self._p12_bytes = bundle.export_pkcs12(password=result.password, name=self._cn)
 
-            import base64
-            copy_to_clipboard(base64.b64encode(self._p12_bytes))
-            self.app.call_from_thread(
-                self.notify, "PKCS#12 (base64) copied to clipboard", severity="information"
-            )
+                import base64
+                copy_to_clipboard(base64.b64encode(self._p12_bytes))
+                self.app.call_from_thread(
+                    self.notify, "PKCS#12 (base64) copied to clipboard", severity="information"
+                )
 
-            stored, msg = _store_password_if_requested(result, ctx)
-            if msg:
-                severity = "information" if stored else "warning"
-                self.app.call_from_thread(self.notify, msg, severity=severity)
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(self.notify, f"Copy failed: {e}", severity="error")
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                stored, msg = _store_password_if_requested(result, ctx)
+                if msg:
+                    severity = "information" if stored else "warning"
+                    self.app.call_from_thread(self.notify, msg, severity=severity)
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(self.notify, f"Copy failed: {e}", severity="error")
 
     def _show_success(self, msg: str) -> None:
         self.query_one("#export-status", Static).update(f"[green]{msg}[/green]")

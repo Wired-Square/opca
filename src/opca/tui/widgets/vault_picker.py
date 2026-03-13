@@ -11,6 +11,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Static
 
 from opca.tui.widgets.op_status import OpStatus
+from opca.tui.workers import op_status_context
 
 
 class VaultPicker(ModalScreen[str | None]):
@@ -38,22 +39,19 @@ class VaultPicker(ModalScreen[str | None]):
     @work(thread=True, exclusive=True)
     def _load_vaults(self) -> None:
         """Fetch available vaults from 1Password."""
-        op_status = self.query_one("#vault-picker-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Loading vaults...")
-        try:
-            result = self._tui_context.op.vault_list()
-            vaults = json.loads(result.stdout)
-            rows = []
-            for vault in vaults:
-                name = vault.get("name", "")
-                if name:
-                    rows.append(name)
-            rows.sort()
-            self.app.call_from_thread(self._populate_table, rows)
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(self._show_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Loading vaults...", status_id="#vault-picker-status"):
+            try:
+                result = self._tui_context.op.vault_list()
+                vaults = json.loads(result.stdout)
+                rows = []
+                for vault in vaults:
+                    name = vault.get("name", "")
+                    if name:
+                        rows.append(name)
+                rows.sort()
+                self.app.call_from_thread(self._populate_table, rows)
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(self._show_error, str(e))
 
     def _populate_table(self, names: list[str]) -> None:
         table = self.query_one("#vault-picker-table", DataTable)

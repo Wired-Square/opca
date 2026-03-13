@@ -28,6 +28,7 @@ from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
+from opca.tui.workers import op_status_context
 from opca.utils.files import read_bytes, write_bytes
 
 
@@ -158,53 +159,50 @@ class VaultBackupScreen(TabbedViewMixin, Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _do_backup(self, result: PasswordResult, output: str) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
         log_panel = self.query_one("#vault-log", LogPanel)
         ctx = self.app.tui_context
 
-        self.app.call_from_thread(op_status.show, "Creating backup...")
-        try:
-            self.app.call_from_thread(log_panel.log_info, "Enumerating vault items...")
-            vb = VaultBackup(op=ctx.op)
-            payload = vb.create_backup()
+        with op_status_context(self, "Creating backup..."):
+            try:
+                self.app.call_from_thread(log_panel.log_info, "Enumerating vault items...")
+                vb = VaultBackup(op=ctx.op)
+                payload = vb.create_backup()
 
-            metadata = payload["metadata"]
-            self.app.call_from_thread(
-                log_panel.log_info,
-                f"Found {metadata['item_count']} items in vault '{metadata['vault_name']}'",
-            )
+                metadata = payload["metadata"]
+                self.app.call_from_thread(
+                    log_panel.log_info,
+                    f"Found {metadata['item_count']} items in vault '{metadata['vault_name']}'",
+                )
 
-            self.app.call_from_thread(log_panel.log_info, "Encrypting...")
-            plaintext = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            encrypted = encrypt_payload(plaintext, result.password)
+                self.app.call_from_thread(log_panel.log_info, "Encrypting...")
+                plaintext = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                encrypted = encrypt_payload(plaintext, result.password)
 
-            self.app.call_from_thread(log_panel.log_info, f"Writing {output}...")
-            write_bytes(output, encrypted, overwrite=True, mode=0o600)
+                self.app.call_from_thread(log_panel.log_info, f"Writing {output}...")
+                write_bytes(output, encrypted, overwrite=True, mode=0o600)
 
-            self.app.call_from_thread(log_panel.log_success, f"Backup saved to {output}")
+                self.app.call_from_thread(log_panel.log_success, f"Backup saved to {output}")
 
-            # Store password in 1Password if requested
-            if result.store_in_op:
-                self.app.call_from_thread(log_panel.log_info, "Storing password in 1Password...")
-                try:
-                    op = Op(account=getattr(ctx.op, "account", None), vault=result.store_vault)
-                    op.store_item(
-                        item_title=result.store_title,
-                        attributes=[f"password={result.password}"],
-                        category="Password",
-                        action="create",
-                    )
-                    self.app.call_from_thread(
-                        log_panel.log_success,
-                        f"Password stored as '{result.store_title}' in vault '{result.store_vault}'",
-                    )
-                except (Exception, SystemExit) as e:
-                    self.app.call_from_thread(log_panel.log_warning, f"Could not store password: {e}")
+                # Store password in 1Password if requested
+                if result.store_in_op:
+                    self.app.call_from_thread(log_panel.log_info, "Storing password in 1Password...")
+                    try:
+                        op = Op(account=getattr(ctx.op, "account", None), vault=result.store_vault)
+                        op.store_item(
+                            item_title=result.store_title,
+                            attributes=[f"password={result.password}"],
+                            category="Password",
+                            action="create",
+                        )
+                        self.app.call_from_thread(
+                            log_panel.log_success,
+                            f"Password stored as '{result.store_title}' in vault '{result.store_vault}'",
+                        )
+                    except (Exception, SystemExit) as e:
+                        self.app.call_from_thread(log_panel.log_warning, f"Could not store password: {e}")
 
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log_panel.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log_panel.log_error, str(e))
 
     # --- Restore flow ---
 
@@ -226,54 +224,51 @@ class VaultBackupScreen(TabbedViewMixin, Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _do_restore(self, password: str, input_file: str) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
         log_panel = self.query_one("#vault-log", LogPanel)
         ctx = self.app.tui_context
 
-        self.app.call_from_thread(op_status.show, "Restoring from backup...")
-        try:
-            self.app.call_from_thread(log_panel.log_info, f"Reading {input_file}...")
-            data = read_bytes(input_file)
-            if not data:
-                self.app.call_from_thread(log_panel.log_error, f"Cannot read {input_file}")
-                return
+        with op_status_context(self, "Restoring from backup..."):
+            try:
+                self.app.call_from_thread(log_panel.log_info, f"Reading {input_file}...")
+                data = read_bytes(input_file)
+                if not data:
+                    self.app.call_from_thread(log_panel.log_error, f"Cannot read {input_file}")
+                    return
 
-            self.app.call_from_thread(log_panel.log_info, "Decrypting...")
-            plaintext = decrypt_payload(data, password)
-            payload = json.loads(plaintext.decode("utf-8"))
+                self.app.call_from_thread(log_panel.log_info, "Decrypting...")
+                plaintext = decrypt_payload(data, password)
+                payload = json.loads(plaintext.decode("utf-8"))
 
-            metadata = VaultBackup.get_metadata(payload)
-            self.app.call_from_thread(
-                log_panel.log_info,
-                f"Backup from '{metadata.get('vault_name', '?')}' "
-                f"({metadata.get('backup_date', '?')}), "
-                f"{metadata.get('item_count', '?')} items",
-            )
+                metadata = VaultBackup.get_metadata(payload)
+                self.app.call_from_thread(
+                    log_panel.log_info,
+                    f"Backup from '{metadata.get('vault_name', '?')}' "
+                    f"({metadata.get('backup_date', '?')}), "
+                    f"{metadata.get('item_count', '?')} items",
+                )
 
-            self.app.call_from_thread(log_panel.log_info, "Restoring items...")
-            vb = VaultBackup(op=ctx.op)
+                self.app.call_from_thread(log_panel.log_info, "Restoring items...")
+                vb = VaultBackup(op=ctx.op)
 
-            def _on_progress(item_type: str, title: str) -> None:
-                self.app.call_from_thread(log_panel.log_info, f"  {item_type}: {title}")
+                def _on_progress(item_type: str, title: str) -> None:
+                    self.app.call_from_thread(log_panel.log_info, f"  {item_type}: {title}")
 
-            counts = vb.restore_backup(payload, on_progress=_on_progress)
+                counts = vb.restore_backup(payload, on_progress=_on_progress)
 
-            self.app.call_from_thread(log_panel.log_info, "Summary:")
-            for item_type, count in sorted(counts.items()):
-                self.app.call_from_thread(log_panel.log_info, f"  {item_type}: {count}")
+                self.app.call_from_thread(log_panel.log_info, "Summary:")
+                for item_type, count in sorted(counts.items()):
+                    self.app.call_from_thread(log_panel.log_info, f"  {item_type}: {count}")
 
-            self.app.call_from_thread(log_panel.log_success, "Restore complete")
+                self.app.call_from_thread(log_panel.log_success, "Restore complete")
 
-        except BackupDecryptionError as e:
-            self.app.call_from_thread(log_panel.log_error, str(e))
-        except BackupFormatError as e:
-            self.app.call_from_thread(log_panel.log_error, str(e))
-        except VaultNotEmptyError as e:
-            self.app.call_from_thread(log_panel.log_error, str(e))
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log_panel.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+            except BackupDecryptionError as e:
+                self.app.call_from_thread(log_panel.log_error, str(e))
+            except BackupFormatError as e:
+                self.app.call_from_thread(log_panel.log_error, str(e))
+            except VaultNotEmptyError as e:
+                self.app.call_from_thread(log_panel.log_error, str(e))
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log_panel.log_error, str(e))
 
     # --- Info flow ---
 
@@ -295,45 +290,42 @@ class VaultBackupScreen(TabbedViewMixin, Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _do_info(self, password: str, input_file: str) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
         log_panel = self.query_one("#vault-log", LogPanel)
 
-        self.app.call_from_thread(op_status.show, "Reading backup info...")
-        try:
-            data = read_bytes(input_file)
-            if not data:
-                self.app.call_from_thread(log_panel.log_error, f"Cannot read {input_file}")
-                return
+        with op_status_context(self, "Reading backup info..."):
+            try:
+                data = read_bytes(input_file)
+                if not data:
+                    self.app.call_from_thread(log_panel.log_error, f"Cannot read {input_file}")
+                    return
 
-            plaintext = decrypt_payload(data, password)
-            payload = json.loads(plaintext.decode("utf-8"))
-            metadata = VaultBackup.get_metadata(payload)
+                plaintext = decrypt_payload(data, password)
+                payload = json.loads(plaintext.decode("utf-8"))
+                metadata = VaultBackup.get_metadata(payload)
 
-            self.app.call_from_thread(log_panel.log_info, f"OPCA version: {metadata.get('opca_version', '?')}")
-            self.app.call_from_thread(log_panel.log_info, f"Vault name:   {metadata.get('vault_name', '?')}")
-            self.app.call_from_thread(log_panel.log_info, f"Backup date:  {metadata.get('backup_date', '?')}")
-            self.app.call_from_thread(log_panel.log_info, f"Item count:   {metadata.get('item_count', '?')}")
+                self.app.call_from_thread(log_panel.log_info, f"OPCA version: {metadata.get('opca_version', '?')}")
+                self.app.call_from_thread(log_panel.log_info, f"Vault name:   {metadata.get('vault_name', '?')}")
+                self.app.call_from_thread(log_panel.log_info, f"Backup date:  {metadata.get('backup_date', '?')}")
+                self.app.call_from_thread(log_panel.log_info, f"Item count:   {metadata.get('item_count', '?')}")
 
-            items = payload.get("items", [])
-            type_counts: dict[str, int] = {}
-            for item in items:
-                t = item.get("type", "unknown")
-                type_counts[t] = type_counts.get(t, 0) + 1
+                items = payload.get("items", [])
+                type_counts: dict[str, int] = {}
+                for item in items:
+                    t = item.get("type", "unknown")
+                    type_counts[t] = type_counts.get(t, 0) + 1
 
-            if type_counts:
-                self.app.call_from_thread(log_panel.log_info, "")
-                self.app.call_from_thread(log_panel.log_info, "Item breakdown:")
-                for t, c in sorted(type_counts.items()):
-                    self.app.call_from_thread(log_panel.log_info, f"  {t}: {c}")
+                if type_counts:
+                    self.app.call_from_thread(log_panel.log_info, "")
+                    self.app.call_from_thread(log_panel.log_info, "Item breakdown:")
+                    for t, c in sorted(type_counts.items()):
+                        self.app.call_from_thread(log_panel.log_info, f"  {t}: {c}")
 
-            self.app.call_from_thread(log_panel.log_success, "Info complete")
+                self.app.call_from_thread(log_panel.log_success, "Info complete")
 
-        except (BackupDecryptionError, BackupFormatError) as e:
-            self.app.call_from_thread(log_panel.log_error, str(e))
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(log_panel.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+            except (BackupDecryptionError, BackupFormatError) as e:
+                self.app.call_from_thread(log_panel.log_error, str(e))
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(log_panel.log_error, str(e))
 
     # --- Helpers ---
 

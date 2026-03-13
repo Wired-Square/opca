@@ -12,7 +12,7 @@ from opca.tui.widgets.file_input import FileInput
 from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
-from opca.tui.workers import capture_handler
+from opca.tui.workers import capture_handler, op_status_context
 
 
 class CertImportScreen(Screen):
@@ -150,114 +150,106 @@ class CertImportScreen(Screen):
     @work(thread=True, exclusive=True, group="op")
     def _do_import_with_key(self) -> None:
         """Import certificate + private key. Auto-detects local vs external."""
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Importing certificate...")
-
-        try:
-            fi_cert = self.query_one("#fi-cert", FileInput)
-            fi_key = self.query_one("#fi-key", FileInput)
-
-            cert_data = fi_cert.get_content()
-            key_data = fi_key.get_content()
-
-            if not cert_data:
-                self.app.call_from_thread(self._show_error, "Could not read certificate.")
-                return
-            if not key_data:
-                self.app.call_from_thread(self._show_error, "Could not read private key.")
-                return
-
-            # Determine if signed by our CA
-            from cryptography import x509
-            from cryptography.hazmat.backends import default_backend
-
+        with op_status_context(self, "Importing certificate..."):
             try:
-                certificate = x509.load_pem_x509_certificate(cert_data, default_backend())
-            except Exception:
-                try:
-                    certificate = x509.load_der_x509_certificate(cert_data, default_backend())
-                except Exception:
-                    self.app.call_from_thread(
-                        self._show_error, "Unable to parse certificate as PEM or DER."
-                    )
+                fi_cert = self.query_one("#fi-cert", FileInput)
+                fi_key = self.query_one("#fi-key", FileInput)
+
+                cert_data = fi_cert.get_content()
+                key_data = fi_key.get_content()
+
+                if not cert_data:
+                    self.app.call_from_thread(self._show_error, "Could not read certificate.")
+                    return
+                if not key_data:
+                    self.app.call_from_thread(self._show_error, "Could not read private key.")
                     return
 
-            ctx = self.app.tui_context
-            is_external = not ctx.ca.is_cert_valid(certificate)
+                # Determine if signed by our CA
+                from cryptography import x509
+                from cryptography.hazmat.backends import default_backend
 
-            from opca.commands.cert.actions import handle_cert_import
+                try:
+                    certificate = x509.load_pem_x509_certificate(cert_data, default_backend())
+                except Exception:
+                    try:
+                        certificate = x509.load_der_x509_certificate(cert_data, default_backend())
+                    except Exception:
+                        self.app.call_from_thread(
+                            self._show_error, "Unable to parse certificate as PEM or DER."
+                        )
+                        return
 
-            app = ctx.make_app(
-                command="cert",
-                subcommand="import",
-                **fi_cert.as_kwarg("cert_file"),
-                **fi_key.as_kwarg("key_file"),
-                external=is_external,
-                cn=None,
-            )
-            code, output = capture_handler(handle_cert_import, app)
+                ctx = self.app.tui_context
+                is_external = not ctx.ca.is_cert_valid(certificate)
 
-            log = self.query_one("#import-log", LogPanel)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+                from opca.commands.cert.actions import handle_cert_import
 
-            if code == 0:
-                label = "external" if is_external else "local"
-                self.app.call_from_thread(
-                    self.notify,
-                    f"Certificate imported as {label}.",
-                    severity="information",
+                app = ctx.make_app(
+                    command="cert",
+                    subcommand="import",
+                    **fi_cert.as_kwarg("cert_file"),
+                    **fi_key.as_kwarg("key_file"),
+                    external=is_external,
+                    cn=None,
                 )
-                self.app.call_from_thread(self.app.pop_screen)
-            else:
-                self.app.call_from_thread(self._show_error, "Import failed. See log.")
+                code, output = capture_handler(handle_cert_import, app)
 
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(self._show_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                log = self.query_one("#import-log", LogPanel)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+
+                if code == 0:
+                    label = "external" if is_external else "local"
+                    self.app.call_from_thread(
+                        self.notify,
+                        f"Certificate imported as {label}.",
+                        severity="information",
+                    )
+                    self.app.call_from_thread(self.app.pop_screen)
+                else:
+                    self.app.call_from_thread(self._show_error, "Import failed. See log.")
+
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(self._show_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_import_csr(self, csr_cn: str) -> None:
         """Import a certificate that matches an existing CSR."""
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Importing certificate for CSR '{csr_cn}'...")
+        with op_status_context(self, f"Importing certificate for CSR '{csr_cn}'..."):
+            try:
+                fi_cert = self.query_one("#fi-cert", FileInput)
+                cert_data = fi_cert.get_content()
 
-        try:
-            fi_cert = self.query_one("#fi-cert", FileInput)
-            cert_data = fi_cert.get_content()
+                if not cert_data:
+                    self.app.call_from_thread(self._show_error, "Could not read certificate.")
+                    return
 
-            if not cert_data:
-                self.app.call_from_thread(self._show_error, "Could not read certificate.")
-                return
+                from opca.commands.csr.actions import handle_csr_import
 
-            from opca.commands.csr.actions import handle_csr_import
-
-            ctx = self.app.tui_context
-            app = ctx.make_app(
-                command="csr",
-                subcommand="import",
-                cn=csr_cn,
-                **fi_cert.as_kwarg("cert_file"),
-            )
-            code, output = capture_handler(handle_csr_import, app)
-
-            log = self.query_one("#import-log", LogPanel)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
-
-            if code == 0:
-                self.app.call_from_thread(
-                    self.notify,
-                    f"Certificate imported for CSR '{csr_cn}'.",
-                    severity="information",
+                ctx = self.app.tui_context
+                app = ctx.make_app(
+                    command="csr",
+                    subcommand="import",
+                    cn=csr_cn,
+                    **fi_cert.as_kwarg("cert_file"),
                 )
-                self.app.call_from_thread(self.app.pop_screen)
-            else:
-                self.app.call_from_thread(self._show_error, "Import failed. See log.")
+                code, output = capture_handler(handle_csr_import, app)
 
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(self._show_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+                log = self.query_one("#import-log", LogPanel)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+
+                if code == 0:
+                    self.app.call_from_thread(
+                        self.notify,
+                        f"Certificate imported for CSR '{csr_cn}'.",
+                        severity="information",
+                    )
+                    self.app.call_from_thread(self.app.pop_screen)
+                else:
+                    self.app.call_from_thread(self._show_error, "Import failed. See log.")
+
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(self._show_error, str(e))
 
     def _show_error(self, msg: str) -> None:
         self.query_one("#import-status", Static).update(f"[red]{msg}[/red]")

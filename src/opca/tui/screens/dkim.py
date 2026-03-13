@@ -13,7 +13,7 @@ from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
-from opca.tui.workers import capture_handler
+from opca.tui.workers import capture_handler, op_status_context
 
 
 class DKIMScreen(TabbedViewMixin, Screen):
@@ -104,21 +104,18 @@ class DKIMScreen(TabbedViewMixin, Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _load_list(self) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Loading DKIM keys...")
-        try:
-            from opca.commands.dkim.actions import handle_dkim_list
-            ctx = self.app.tui_context
-            app = ctx.make_app(command="dkim", subcommand="list")
-            code, output = capture_handler(handle_dkim_list, app)
-            log = self.query_one("#dkim-log", LogPanel)
-            if output.strip():
-                self.app.call_from_thread(log.write, output)
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#dkim-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Loading DKIM keys..."):
+            try:
+                from opca.commands.dkim.actions import handle_dkim_list
+                ctx = self.app.tui_context
+                app = ctx.make_app(command="dkim", subcommand="list")
+                code, output = capture_handler(handle_dkim_list, app)
+                log = self.query_one("#dkim-log", LogPanel)
+                if output.strip():
+                    self.app.call_from_thread(log.write, output)
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#dkim-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_create(self) -> None:
@@ -133,32 +130,28 @@ class DKIMScreen(TabbedViewMixin, Screen):
             )
             return
 
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, f"Creating DKIM key for {selector}._domainkey.{domain}...")
-
-        try:
-            from opca.commands.dkim.actions import handle_dkim_create
-            ctx = self.app.tui_context
-            app = ctx.make_app(
-                command="dkim", subcommand="create",
-                domain=domain, selector=selector,
-                key_size=2048, deploy_route53=deploy_r53,
-            )
-            code, output = capture_handler(handle_dkim_create, app)
-            log = self.query_one("#dkim-log", LogPanel)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
-            if code == 0:
+        with op_status_context(self, f"Creating DKIM key for {selector}._domainkey.{domain}..."):
+            try:
+                from opca.commands.dkim.actions import handle_dkim_create
+                ctx = self.app.tui_context
+                app = ctx.make_app(
+                    command="dkim", subcommand="create",
+                    domain=domain, selector=selector,
+                    key_size=2048, deploy_route53=deploy_r53,
+                )
+                code, output = capture_handler(handle_dkim_create, app)
+                log = self.query_one("#dkim-log", LogPanel)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+                if code == 0:
+                    self.app.call_from_thread(
+                        self.query_one("#dkim-status", Static).update,
+                        "[green]DKIM key created[/green]",
+                    )
+            except (Exception, SystemExit) as e:
                 self.app.call_from_thread(
                     self.query_one("#dkim-status", Static).update,
-                    "[green]DKIM key created[/green]",
+                    f"[red]Error: {e}[/red]",
                 )
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(
-                self.query_one("#dkim-status", Static).update,
-                f"[red]Error: {e}[/red]",
-            )
-        finally:
-            self.app.call_from_thread(op_status.hide)
 
     @work(thread=True, exclusive=True, group="op")
     def _do_info(self) -> None:
@@ -166,20 +159,17 @@ class DKIMScreen(TabbedViewMixin, Screen):
         if not selected:
             return
         domain, selector = selected
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Loading DKIM info...")
-        try:
-            from opca.commands.dkim.actions import handle_dkim_info
-            ctx = self.app.tui_context
-            app = ctx.make_app(command="dkim", subcommand="info", domain=domain, selector=selector)
-            code, output = capture_handler(handle_dkim_info, app)
-            log = self.query_one("#dkim-log", LogPanel)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#dkim-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Loading DKIM info..."):
+            try:
+                from opca.commands.dkim.actions import handle_dkim_info
+                ctx = self.app.tui_context
+                app = ctx.make_app(command="dkim", subcommand="info", domain=domain, selector=selector)
+                code, output = capture_handler(handle_dkim_info, app)
+                log = self.query_one("#dkim-log", LogPanel)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#dkim-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_deploy(self) -> None:
@@ -187,20 +177,17 @@ class DKIMScreen(TabbedViewMixin, Screen):
         if not selected:
             return
         domain, selector = selected
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Deploying DKIM key...")
-        try:
-            from opca.commands.dkim.actions import handle_dkim_deploy
-            ctx = self.app.tui_context
-            app = ctx.make_app(command="dkim", subcommand="deploy", domain=domain, selector=selector)
-            code, output = capture_handler(handle_dkim_deploy, app)
-            log = self.query_one("#dkim-log", LogPanel)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#dkim-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Deploying DKIM key..."):
+            try:
+                from opca.commands.dkim.actions import handle_dkim_deploy
+                ctx = self.app.tui_context
+                app = ctx.make_app(command="dkim", subcommand="deploy", domain=domain, selector=selector)
+                code, output = capture_handler(handle_dkim_deploy, app)
+                log = self.query_one("#dkim-log", LogPanel)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#dkim-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_verify(self) -> None:
@@ -208,17 +195,14 @@ class DKIMScreen(TabbedViewMixin, Screen):
         if not selected:
             return
         domain, selector = selected
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Verifying DKIM key...")
-        try:
-            from opca.commands.dkim.actions import handle_dkim_verify
-            ctx = self.app.tui_context
-            app = ctx.make_app(command="dkim", subcommand="verify", domain=domain, selector=selector)
-            code, output = capture_handler(handle_dkim_verify, app)
-            log = self.query_one("#dkim-log", LogPanel)
-            self.app.call_from_thread(log.write, output or f"Exit code: {code}")
-        except (Exception, SystemExit) as e:
-            log = self.query_one("#dkim-log", LogPanel)
-            self.app.call_from_thread(log.log_error, str(e))
-        finally:
-            self.app.call_from_thread(op_status.hide)
+        with op_status_context(self, "Verifying DKIM key..."):
+            try:
+                from opca.commands.dkim.actions import handle_dkim_verify
+                ctx = self.app.tui_context
+                app = ctx.make_app(command="dkim", subcommand="verify", domain=domain, selector=selector)
+                code, output = capture_handler(handle_dkim_verify, app)
+                log = self.query_one("#dkim-log", LogPanel)
+                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+            except (Exception, SystemExit) as e:
+                log = self.query_one("#dkim-log", LogPanel)
+                self.app.call_from_thread(log.log_error, str(e))

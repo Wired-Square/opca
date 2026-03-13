@@ -13,6 +13,7 @@ from opca.tui.styles import style_status
 from opca.tui.widgets.nav_bar import NavBar
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
+from opca.tui.workers import op_status_context
 from opca.utils.datetime import format_datetime, parse_datetime
 
 FILTER_MODES = [
@@ -178,12 +179,8 @@ class CertListScreen(Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _load_certs(self, mode: str) -> None:
-        op_status = self.query_one("#op-status", OpStatus)
-        self.app.call_from_thread(op_status.show, "Loading certificates...")
-        try:
+        with op_status_context(self, "Loading certificates..."):
             self._load_certs_inner(mode)
-        finally:
-            self.app.call_from_thread(op_status.hide)
 
     def _load_certs_inner(self, mode: str) -> None:
         ctx = self.app.tui_context
@@ -200,63 +197,63 @@ class CertListScreen(Screen):
             self._load_local_certs(db, mode)
 
     def _load_local_certs(self, db, mode: str) -> None:
-        if mode == "valid":
-            serials = sorted(db.certs_valid, key=int)
-        elif mode == "expired":
-            serials = sorted(db.certs_expired, key=int)
-        elif mode == "revoked":
-            serials = sorted(db.certs_revoked, key=int)
-        elif mode == "expiring":
-            serials = sorted(db.certs_expires_soon, key=int)
-        else:
-            serials = sorted(
-                db.certs_valid | db.certs_expired | db.certs_revoked | db.certs_expires_soon,
-                key=int,
-            )
-
-        expiring_set = db.certs_expires_soon
-        rows = []
-        for serial in serials:
-            cert = db.query_cert(cert_info={"serial": serial})
-            if not cert:
-                continue
-
-            status = cert["status"]
-            if status == "Valid" and cert["serial"] in expiring_set:
-                status = "Expiring"
-
-            expiry = format_datetime(parse_datetime(cert["expiry_date"]), output_format="compact") if cert.get("expiry_date") else "-"
-            revocation = format_datetime(parse_datetime(cert["revocation_date"]), output_format="compact") if cert.get("revocation_date") else "-"
-            rows.append((
-                cert["serial"],
-                cert["cn"],
-                cert["title"],
-                status,
-                expiry,
-                revocation,
-            ))
-
-        self.app.call_from_thread(self._update_table, rows)
+        sets = {
+            "valid": db.certs_valid,
+            "expired": db.certs_expired,
+            "revoked": db.certs_revoked,
+            "expiring": db.certs_expires_soon,
+        }
+        self._load_cert_rows(
+            db,
+            mode,
+            serial_sets=sets,
+            expiring_set=db.certs_expires_soon,
+            query_fn=db.query_cert,
+            col3_key="title",
+            col6_key="revocation_date",
+        )
 
     def _load_external_certs(self, db, mode: str) -> None:
-        if mode == "valid":
-            serials = sorted(db.ext_certs_valid)
-        elif mode == "expired":
-            serials = sorted(db.ext_certs_expired)
-        elif mode == "expiring":
-            serials = sorted(db.ext_certs_expires_soon)
-        elif mode == "revoked":
-            # External certs have no revocation
+        sets = {
+            "valid": db.ext_certs_valid,
+            "expired": db.ext_certs_expired,
+            "expiring": db.ext_certs_expires_soon,
+        }
+        self._load_cert_rows(
+            db,
+            mode,
+            serial_sets=sets,
+            expiring_set=db.ext_certs_expires_soon,
+            query_fn=db.query_external_cert,
+            col3_key="issuer",
+            col6_key="import_date",
+        )
+
+    def _load_cert_rows(
+        self,
+        db,
+        mode: str,
+        *,
+        serial_sets: dict,
+        expiring_set: set,
+        query_fn,
+        col3_key: str,
+        col6_key: str,
+    ) -> None:
+        """Build table rows from a set of certificate serial numbers."""
+        if mode in serial_sets:
+            serials = sorted(serial_sets[mode], key=int)
+        elif mode == "revoked" and "revoked" not in serial_sets:
             serials = []
         else:
-            serials = sorted(
-                db.ext_certs_valid | db.ext_certs_expired | db.ext_certs_expires_soon,
-            )
+            all_serials: set = set()
+            for s in serial_sets.values():
+                all_serials |= s
+            serials = sorted(all_serials, key=int)
 
-        expiring_set = db.ext_certs_expires_soon
         rows = []
         for serial in serials:
-            cert = db.query_external_cert(cert_info={"serial": serial})
+            cert = query_fn(cert_info={"serial": serial})
             if not cert:
                 continue
 
@@ -265,14 +262,14 @@ class CertListScreen(Screen):
                 status = "Expiring"
 
             expiry = format_datetime(parse_datetime(cert["expiry_date"]), output_format="compact") if cert.get("expiry_date") else "-"
-            imported = format_datetime(parse_datetime(cert["import_date"]), output_format="compact") if cert.get("import_date") else "-"
+            last_col = format_datetime(parse_datetime(cert[col6_key]), output_format="compact") if cert.get(col6_key) else "-"
             rows.append((
                 cert["serial"],
                 cert["cn"],
-                cert.get("issuer", "-"),
+                cert.get(col3_key, "-"),
                 status,
                 expiry,
-                imported,
+                last_col,
             ))
 
         self.app.call_from_thread(self._update_table, rows)
@@ -304,51 +301,49 @@ class CertListScreen(Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _do_renew(self, serial: str, cn: str) -> None:
-        self.app.call_from_thread(self.query_one("#op-status", OpStatus).show, f"Renewing {cn}...")
-        ok = False
-        try:
-            ctx = self.app.tui_context
-            ok = bool(ctx.ca.renew_certificate_bundle(cert_info={"serial": serial}))
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(self._notify_error, "Renew", str(e))
-        finally:
-            self.app.call_from_thread(self.query_one("#op-status", OpStatus).hide)
-            self._op_pending = False
-        if ok:
-            self.app.call_from_thread(
-                self.notify, f"Renew succeeded: {cn}", severity="information"
-            )
-        else:
-            self.app.call_from_thread(
-                self.notify, f"Renew failed: {cn}", severity="error"
-            )
-        select = self.query_one("#filter-select", Select)
-        self._load_certs_inner(str(select.value))
+        with op_status_context(self, f"Renewing {cn}..."):
+            ok = False
+            try:
+                ctx = self.app.tui_context
+                ok = bool(ctx.ca.renew_certificate_bundle(cert_info={"serial": serial}))
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(self._notify_error, "Renew", str(e))
+            finally:
+                self._op_pending = False
+            if ok:
+                self.app.call_from_thread(
+                    self.notify, f"Renew succeeded: {cn}", severity="information"
+                )
+            else:
+                self.app.call_from_thread(
+                    self.notify, f"Renew failed: {cn}", severity="error"
+                )
+            select = self.query_one("#filter-select", Select)
+            self._load_certs_inner(str(select.value))
 
     @work(thread=True, exclusive=True, group="op")
     def _do_revoke(self, serial: str, cn: str) -> None:
-        self.app.call_from_thread(self.query_one("#op-status", OpStatus).show, f"Revoking {cn}...")
-        ok = False
-        try:
-            ctx = self.app.tui_context
-            ok = bool(ctx.ca.revoke_certificate(cert_info={"serial": serial}))
+        with op_status_context(self, f"Revoking {cn}..."):
+            ok = False
+            try:
+                ctx = self.app.tui_context
+                ok = bool(ctx.ca.revoke_certificate(cert_info={"serial": serial}))
+                if ok:
+                    ctx.ca.generate_crl()
+            except (Exception, SystemExit) as e:
+                self.app.call_from_thread(self._notify_error, "Revoke", str(e))
+            finally:
+                self._op_pending = False
             if ok:
-                ctx.ca.generate_crl()
-        except (Exception, SystemExit) as e:
-            self.app.call_from_thread(self._notify_error, "Revoke", str(e))
-        finally:
-            self.app.call_from_thread(self.query_one("#op-status", OpStatus).hide)
-            self._op_pending = False
-        if ok:
-            self.app.call_from_thread(
-                self.notify, f"Revoke succeeded: {cn}", severity="information"
-            )
-        else:
-            self.app.call_from_thread(
-                self.notify, f"Revoke failed: {cn}", severity="error"
-            )
-        select = self.query_one("#filter-select", Select)
-        self._load_certs_inner(str(select.value))
+                self.app.call_from_thread(
+                    self.notify, f"Revoke succeeded: {cn}", severity="information"
+                )
+            else:
+                self.app.call_from_thread(
+                    self.notify, f"Revoke failed: {cn}", severity="error"
+                )
+            select = self.query_one("#filter-select", Select)
+            self._load_certs_inner(str(select.value))
 
     def _notify_error(self, action: str, msg: str) -> None:
         self.notify(f"{action} error: {msg}", severity="error")
