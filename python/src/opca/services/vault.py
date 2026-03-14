@@ -151,7 +151,7 @@ class VaultBackup:
             title = item["title"]
             data = item["data"]
 
-            log.info("Restoring %s: %s", item_type, title)
+            log.debug("Restoring %s: %s", item_type, title)
             if on_progress is not None:
                 on_progress(item_type, title)
 

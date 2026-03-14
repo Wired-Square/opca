@@ -32,9 +32,11 @@ class CertificateAuthorityDB:
     - v4: Added issuer field for external certificate tracking
     - v5: Added csr table for tracking certificate signing requests
     - v6: Added external_certificate table, migrated external certs out of certificate_authority
+    - v7: Added cert metadata columns (cert_type, not_before, key_type, key_size, issuer, san),
+           csr_pem column, crl_metadata table, openvpn_template table, openvpn_profile table
     """
 
-    _default_schema_version: int = 6
+    _default_schema_version: int = 7
 
     @property
     def default_schema_version(self):
@@ -85,6 +87,9 @@ class CertificateAuthorityDB:
             self.create_ca_table()
             self.create_csr_table()
             self.create_external_cert_table()
+            self.create_crl_metadata_table()
+            self.create_openvpn_template_table()
+            self.create_openvpn_profile_table()
 
         self.create_database_index()
 
@@ -105,7 +110,13 @@ class CertificateAuthorityDB:
                 status TEXT,
                 expiry_date TEXT,
                 revocation_date TEXT,
-                subject TEXT
+                subject TEXT,
+                cert_type TEXT,
+                not_before TEXT,
+                key_type TEXT,
+                key_size INTEGER,
+                issuer TEXT,
+                san TEXT
             )
             """
         )
@@ -125,7 +136,8 @@ class CertificateAuthorityDB:
                 email TEXT,
                 subject TEXT,
                 status TEXT,
-                created_date TEXT
+                created_date TEXT,
+                csr_pem TEXT
             )
             """
         )
@@ -146,7 +158,64 @@ class CertificateAuthorityDB:
                 subject TEXT,
                 issuer TEXT,
                 issuer_subject TEXT,
-                import_date TEXT
+                import_date TEXT,
+                cert_type TEXT,
+                not_before TEXT,
+                key_type TEXT,
+                key_size INTEGER,
+                san TEXT
+            )
+            """
+        )
+        self.conn.commit()
+        cursor.close()
+
+    def create_crl_metadata_table(self) -> None:
+        """ Create a table to cache CRL metadata """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS crl_metadata (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                issuer TEXT,
+                last_update TEXT,
+                next_update TEXT,
+                crl_number INTEGER,
+                revoked_count INTEGER DEFAULT 0,
+                revoked_json TEXT
+            )
+            """
+        )
+        self.conn.commit()
+        cursor.close()
+
+    def create_openvpn_template_table(self) -> None:
+        """ Create a table to cache OpenVPN template content """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS openvpn_template (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                content TEXT NOT NULL,
+                updated_date TEXT
+            )
+            """
+        )
+        self.conn.commit()
+        cursor.close()
+
+    def create_openvpn_profile_table(self) -> None:
+        """ Create a table to register generated OpenVPN profiles """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS openvpn_profile (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cn TEXT NOT NULL,
+                title TEXT NOT NULL,
+                created_date TEXT,
+                template TEXT
             )
             """
         )
@@ -282,7 +351,19 @@ class CertificateAuthorityDB:
 
             if schema_version == 4:
                 step = {"to": 5, "ok": False}
-                self.create_csr_table()
+                # Inline the v5-era csr schema (without v7 columns)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS csr (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        cn TEXT,
+                        title TEXT,
+                        csr_type TEXT,
+                        email TEXT,
+                        subject TEXT,
+                        status TEXT,
+                        created_date TEXT
+                    )
+                """)
                 cursor.execute('UPDATE config SET schema_version=5 WHERE id=1;')
                 self.conn.commit()
                 schema_version = 5
@@ -291,7 +372,20 @@ class CertificateAuthorityDB:
 
             if schema_version == 5:
                 step = {"to": 6, "ok": False}
-                self.create_external_cert_table()
+                # Inline the v6-era external_certificate schema (without v7 columns)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS external_certificate (
+                        serial TEXT PRIMARY KEY,
+                        cn TEXT,
+                        title TEXT,
+                        status TEXT,
+                        expiry_date TEXT,
+                        subject TEXT,
+                        issuer TEXT,
+                        issuer_subject TEXT,
+                        import_date TEXT
+                    )
+                """)
                 # Migrate external certs (those with issuer set) to the new table
                 import_ts = now_utc_str("openssl")
                 cursor.execute(
@@ -310,6 +404,33 @@ class CertificateAuthorityDB:
                 cursor.execute('UPDATE config SET schema_version=6 WHERE id=1;')
                 self.conn.commit()
                 schema_version = 6
+                step["ok"] = True
+                info["steps"].append(step)
+
+            if schema_version == 6:
+                step = {"to": 7, "ok": False}
+                # certificate_authority: add metadata columns
+                cursor.execute('ALTER TABLE certificate_authority ADD COLUMN cert_type TEXT;')
+                cursor.execute('ALTER TABLE certificate_authority ADD COLUMN not_before TEXT;')
+                cursor.execute('ALTER TABLE certificate_authority ADD COLUMN key_type TEXT;')
+                cursor.execute('ALTER TABLE certificate_authority ADD COLUMN key_size INTEGER;')
+                cursor.execute('ALTER TABLE certificate_authority ADD COLUMN issuer TEXT;')
+                cursor.execute('ALTER TABLE certificate_authority ADD COLUMN san TEXT;')
+                # external_certificate: add metadata columns
+                cursor.execute('ALTER TABLE external_certificate ADD COLUMN cert_type TEXT DEFAULT "external";')
+                cursor.execute('ALTER TABLE external_certificate ADD COLUMN not_before TEXT;')
+                cursor.execute('ALTER TABLE external_certificate ADD COLUMN key_type TEXT;')
+                cursor.execute('ALTER TABLE external_certificate ADD COLUMN key_size INTEGER;')
+                cursor.execute('ALTER TABLE external_certificate ADD COLUMN san TEXT;')
+                # csr: add PEM cache
+                cursor.execute('ALTER TABLE csr ADD COLUMN csr_pem TEXT;')
+                # New tables
+                self.create_crl_metadata_table()
+                self.create_openvpn_template_table()
+                self.create_openvpn_profile_table()
+                cursor.execute('UPDATE config SET schema_version=7 WHERE id=1;')
+                self.conn.commit()
+                schema_version = 7
                 step["ok"] = True
                 info["steps"].append(step)
 
@@ -970,6 +1091,172 @@ class CertificateAuthorityDB:
         cursor.close()
 
         return [dict(zip(columns, row)) for row in rows]
+
+    # --------------------------
+    # CRL metadata helpers
+    # --------------------------
+
+    def upsert_crl_metadata(self, metadata: Dict[str, Any]) -> bool:
+        """
+        Insert or replace CRL metadata (singleton row, id=1).
+
+        Args:
+            metadata: Dictionary with keys: issuer, last_update, next_update,
+                      crl_number, revoked_count, revoked_json
+        """
+        cursor = self.conn.cursor()
+        metadata["id"] = 1
+
+        columns = ", ".join(metadata.keys())
+        placeholders = ", ".join(["?"] * len(metadata))
+        sql = f"INSERT OR REPLACE INTO crl_metadata ({columns}) VALUES ({placeholders})"
+
+        try:
+            cursor.execute(sql, tuple(metadata.values()))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite CRL metadata upsert error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    def get_crl_metadata(self) -> Optional[Dict[str, Any]]:
+        """Return the cached CRL metadata, or None if not yet populated."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT * FROM crl_metadata WHERE id = 1")
+            row = cursor.fetchone()
+            if row:
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, row))
+            return None
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite CRL metadata query error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    # --------------------------
+    # OpenVPN template helpers
+    # --------------------------
+
+    def upsert_openvpn_template(self, name: str, content: str, updated_date: Optional[str] = None) -> bool:
+        """
+        Insert or update an OpenVPN template by name.
+
+        Args:
+            name: Unique template name
+            content: Template content text
+            updated_date: Optional timestamp string
+        """
+        if updated_date is None:
+            updated_date = now_utc_str("openssl")
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO openvpn_template (name, content, updated_date)
+                VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET content=excluded.content, updated_date=excluded.updated_date
+                """,
+                (name, content, updated_date),
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite OpenVPN template upsert error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    def get_openvpn_template(self, name: str) -> Optional[Dict[str, Any]]:
+        """Return a single OpenVPN template by name."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT * FROM openvpn_template WHERE name = ?", (name,))
+            row = cursor.fetchone()
+            if row:
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, row))
+            return None
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite OpenVPN template query error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    def query_all_openvpn_templates(self) -> List[Dict[str, Any]]:
+        """Return all OpenVPN templates."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT * FROM openvpn_template ORDER BY name")
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite OpenVPN template list error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    def delete_openvpn_template(self, name: str) -> bool:
+        """Delete an OpenVPN template by name."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("DELETE FROM openvpn_template WHERE name = ?", (name,))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite OpenVPN template delete error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    # --------------------------
+    # OpenVPN profile helpers
+    # --------------------------
+
+    def add_openvpn_profile(self, profile: Dict[str, Any]) -> bool:
+        """
+        Add an OpenVPN profile registry entry.
+
+        Args:
+            profile: Dictionary with keys: cn, title, created_date, template
+        """
+        cursor = self.conn.cursor()
+        columns = ", ".join(profile.keys())
+        placeholders = ", ".join(["?"] * len(profile))
+        sql = f"INSERT INTO openvpn_profile ({columns}) VALUES ({placeholders})"
+
+        try:
+            cursor.execute(sql, tuple(profile.values()))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite OpenVPN profile insert error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    def query_all_openvpn_profiles(self) -> List[Dict[str, Any]]:
+        """Return all OpenVPN profile registry entries."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("SELECT * FROM openvpn_profile ORDER BY cn")
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite OpenVPN profile list error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
+
+    def delete_openvpn_profile(self, title: str) -> bool:
+        """Delete an OpenVPN profile registry entry by title."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("DELETE FROM openvpn_profile WHERE title = ?", (title,))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except sqlite3.Error as sqlite_error:
+            raise CADatabaseError(f"SQLite OpenVPN profile delete error: {sqlite_error}") from sqlite_error
+        finally:
+            cursor.close()
 
     def close(self) -> None:
         """ Close the database connection """

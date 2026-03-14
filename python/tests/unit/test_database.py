@@ -25,7 +25,7 @@ class TestDatabaseInitialization:
         db = CertificateAuthorityDB(config)
 
         assert db.conn is not None
-        assert db.default_schema_version == 6
+        assert db.default_schema_version == 7
 
     def test_init_creates_config_table(self):
         """Should create and populate config table."""
@@ -81,7 +81,7 @@ class TestDatabaseInitialization:
         db = CertificateAuthorityDB({})
         config = db.get_config_attributes(attrs=("schema_version",))
 
-        assert config["schema_version"] == 6
+        assert config["schema_version"] == 7
 
 
 class TestConfigOperations:
@@ -600,7 +600,7 @@ class TestSchemaMigration:
 
         # Verify current schema is v3
         config = db.get_config_attributes(attrs=("schema_version",))
-        assert config["schema_version"] == 6
+        assert config["schema_version"] == 7
 
         # Verify import_database method exists and handles schema versions
         import inspect
@@ -620,7 +620,7 @@ class TestSchemaMigration:
         db2 = CertificateAuthorityDB(data=exported)
 
         config = db2.get_config_attributes(attrs=("schema_version",))
-        assert config["schema_version"] == 6
+        assert config["schema_version"] == 7
 
 
 class TestExternalCertificateOperations:
@@ -974,7 +974,7 @@ class TestSchemaMigrationV5ToV6:
         db = CertificateAuthorityDB(data=sql)
 
         config = db.get_config_attributes(attrs=("schema_version",))
-        assert config["schema_version"] == 6
+        assert config["schema_version"] == 7
 
 
 class TestDatabaseClose:

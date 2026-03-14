@@ -157,7 +157,8 @@ class CertificateAuthority:
         return False
 
     def format_db_item(self, certificate: x509.Certificate, item_title: Optional[str] = None,
-                       issuer: Optional[str] = None, issuer_subject: Optional[str] = None) -> dict:
+                       issuer: Optional[str] = None, issuer_subject: Optional[str] = None,
+                       cert_type: Optional[str] = None) -> dict:
         """
         Format a certificate db item from a certificate
 
@@ -166,11 +167,38 @@ class CertificateAuthority:
             item_title (str): The storage title of the certificate bundle
             issuer (str): The issuer CN for external certificates
             issuer_subject (str): The full issuer DN for external certificates
+            cert_type (str): The certificate type (ca, device, vpnclient, etc.)
         """
 
         expired = datetime.now(timezone.utc) > certificate.not_valid_after_utc
         status = 'Expired' if expired else 'Valid'
         cn = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+
+        # Extract public key metadata
+        public_key = certificate.public_key()
+        key_size = public_key.key_size
+        if isinstance(public_key, rsa.RSAPublicKey):
+            key_type = "RSA"
+        elif isinstance(public_key, ec.EllipticCurvePublicKey):
+            key_type = "EC"
+        elif isinstance(public_key, dsa.DSAPublicKey):
+            key_type = "DSA"
+        else:
+            key_type = "Unknown"
+
+        # Extract Subject Alternative Names
+        san = None
+        try:
+            san_ext = certificate.extensions.get_extension_for_oid(
+                ExtensionOID.SUBJECT_ALTERNATIVE_NAME
+            )
+            san_names = []
+            for name in san_ext.value:
+                san_names.append(str(name.value))
+            if san_names:
+                san = ", ".join(san_names)
+        except x509.ExtensionNotFound:
+            pass
 
         if issuer is not None:
             # External certificate — goes into external_certificate table
@@ -184,6 +212,11 @@ class CertificateAuthority:
                 'issuer': issuer,
                 'issuer_subject': issuer_subject or issuer,
                 'import_date': format_datetime(datetime.now(timezone.utc)),
+                'cert_type': cert_type or 'external',
+                'not_before': format_datetime(certificate.not_valid_before_utc),
+                'key_type': key_type,
+                'key_size': key_size,
+                'san': san,
             }
 
         return {
@@ -193,6 +226,12 @@ class CertificateAuthority:
             'status': status,
             'expiry_date': format_datetime(certificate.not_valid_after_utc),
             'subject': certificate.subject.rfc4514_string(),
+            'cert_type': cert_type,
+            'not_before': format_datetime(certificate.not_valid_before_utc),
+            'key_type': key_type,
+            'key_size': key_size,
+            'issuer': certificate.issuer.rfc4514_string(),
+            'san': san,
         }
 
     # ----------------
@@ -544,12 +583,14 @@ class CertificateAuthority:
 
             result_dict[cert_serial] = {
                 'cert': cert_bundle.certificate,
-                'title': item_title
+                'title': item_title,
+                'cert_type': cert_bundle.get_type(),
             }
 
         for serial, attrs in sorted(result_dict.items()):
             self.ca_database.add_cert(self.format_db_item(certificate=attrs['cert'],
-                                                          item_title=attrs['title']))
+                                                          item_title=attrs['title'],
+                                                          cert_type=attrs.get('cert_type')))
 
             if serial > max_serial:
                 max_serial = serial
@@ -1087,6 +1128,7 @@ class CertificateAuthority:
             item_title=item_title,
             issuer=issuer,
             issuer_subject=issuer_subject,
+            cert_type=certbundle.get_type(),
         )
 
         if is_external:
