@@ -100,7 +100,8 @@ DEFAULT_OP_CONF = {
     'dh_item': 'diffie-hellman.dh_parameters',
     'dh_key_size_item': 'diffie-hellman.key_size[text]',
     'ta_item': 'tls_authentication.static_key',
-    'ta_key_size_item': 'tls_authentication.key_size[text]'
+    'ta_key_size_item': 'tls_authentication.key_size[text]',
+    'lock_title': 'CA_Lock',
 }
 
 # ---- Storage defaults ----

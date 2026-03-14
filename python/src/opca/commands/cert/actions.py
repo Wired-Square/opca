@@ -16,6 +16,7 @@ from opca.constants import (
     COLOUR_ERROR,
     COLOUR_RESET,
 )
+from opca.services.vault_lock import VaultLock
 from opca.utils.cli_ui import get_confirmed_password
 from opca.utils.formatting import error, print_result, title
 from opca.utils.files import read_bytes, write_bytes, parse_bulk_file
@@ -48,21 +49,23 @@ def handle_cert_create(app: App) -> int:
     else:
         error("You must provide either --cn or --file.", 1)
 
-    # Create each cert (skip duplicates safely)
-    for cert_info in certs_to_create:
-        cn = cert_info["cn"]  # type: ignore[index]
-        if app.op.item_exists(cn):
-            error(f"CN {cn} already exists. Skipping.", 0)
-            continue
+    lock = VaultLock(app.op)
+    with lock("cert_create"):
+        # Create each cert (skip duplicates safely)
+        for cert_info in certs_to_create:
+            cn = cert_info["cn"]  # type: ignore[index]
+            if app.op.item_exists(cn):
+                error(f"CN {cn} already exists. Skipping.", 0)
+                continue
 
-        title(f'Generating a certificate bundle for {COLOUR_BRIGHT}{cn}{COLOUR_RESET}', 9)
+            title(f'Generating a certificate bundle for {COLOUR_BRIGHT}{cn}{COLOUR_RESET}', 9)
 
-        bundle = app.ca.generate_certificate_bundle( # type: ignore
-            cert_type=app.args.cert_type,
-            item_title=str(cn),
-            config=cert_info,
-        )
-        print_result(bundle.is_valid())
+            bundle = app.ca.generate_certificate_bundle( # type: ignore
+                cert_type=app.args.cert_type,
+                item_title=str(cn),
+                config=cert_info,
+            )
+            print_result(bundle.is_valid())
 
     return EXIT_OK
 
@@ -267,39 +270,41 @@ def handle_cert_import(app: App) -> int:
 
     item_serial = cert_bundle.get_certificate_attrib("serial")
 
-    if is_external or app.ca.is_cert_valid(cert_bundle.certificate):
-        if not is_external:
-            prior_serial = app.ca.ca_database.increment_serial(
-                serial_type="cert",
-                serial_number=item_serial,
-            )
-
-            if prior_serial < item_serial:
-                title(
-                    "The next available serial number is "
-                    f"[ {COLOUR_BRIGHT}{item_serial + 1}{COLOUR_RESET} ]",
-                    8,
+    lock = VaultLock(app.op)
+    with lock("cert_import"):
+        if is_external or app.ca.is_cert_valid(cert_bundle.certificate):
+            if not is_external:
+                prior_serial = app.ca.ca_database.increment_serial(
+                    serial_type="cert",
+                    serial_number=item_serial,
                 )
 
-        issuer = None
-        issuer_subject = None
-        if is_external:
-            from cryptography.x509.oid import NameOID
-            issuer_attrs = cert_bundle.certificate.issuer.get_attributes_for_oid(
-                NameOID.COMMON_NAME
-            )
-            issuer = issuer_attrs[0].value if issuer_attrs else "Unknown"
-            issuer_subject = cert_bundle.certificate.issuer.rfc4514_string()
+                if prior_serial < item_serial:
+                    title(
+                        "The next available serial number is "
+                        f"[ {COLOUR_BRIGHT}{item_serial + 1}{COLOUR_RESET} ]",
+                        8,
+                    )
 
-        title(
-            "Storing certificate bundle for "
-            f"{COLOUR_BRIGHT}{item_title}{COLOUR_RESET} in 1Password",
-            9,
-        )
-        result = app.ca.store_certbundle(cert_bundle, issuer=issuer, issuer_subject=issuer_subject)
-        print_result(result.returncode == 0)
-    else:
-        error("Certificate is not signed by this Certificate Authority", 1)
+            issuer = None
+            issuer_subject = None
+            if is_external:
+                from cryptography.x509.oid import NameOID
+                issuer_attrs = cert_bundle.certificate.issuer.get_attributes_for_oid(
+                    NameOID.COMMON_NAME
+                )
+                issuer = issuer_attrs[0].value if issuer_attrs else "Unknown"
+                issuer_subject = cert_bundle.certificate.issuer.rfc4514_string()
+
+            title(
+                "Storing certificate bundle for "
+                f"{COLOUR_BRIGHT}{item_title}{COLOUR_RESET} in 1Password",
+                9,
+            )
+            result = app.ca.store_certbundle(cert_bundle, issuer=issuer, issuer_subject=issuer_subject)
+            print_result(result.returncode == 0)
+        else:
+            error("Certificate is not signed by this Certificate Authority", 1)
 
     return EXIT_OK
 
@@ -313,22 +318,24 @@ def handle_cert_renew(app: App) -> int:
     else:
         error(f"Must provide either --cn or --serial. Got: {app.args}", 1)
 
-    for cert_info in certs_to_renew:
-        if "cn" in cert_info:
-            desc = cert_info["cn"]
-        else:
-            desc = f"Serial: {cert_info['serial']}"
+    lock = VaultLock(app.op)
+    with lock("cert_renew"):
+        for cert_info in certs_to_renew:
+            if "cn" in cert_info:
+                desc = cert_info["cn"]
+            else:
+                desc = f"Serial: {cert_info['serial']}"
 
-        title(f"Renewing the certificate [ {COLOUR_BRIGHT}{desc}{COLOUR_RESET} ]:", 6)
-        ok = bool(app.ca.renew_certificate_bundle(cert_info=cert_info))
-        print_result(success=ok)
+            title(f"Renewing the certificate [ {COLOUR_BRIGHT}{desc}{COLOUR_RESET} ]:", 6)
+            ok = bool(app.ca.renew_certificate_bundle(cert_info=cert_info))
+            print_result(success=ok)
 
-        if ok:
-            try:
-                _ = app.ca.ca_database.process_ca_database()
-                app.ca.store_ca_database()
-            except Exception:
-                pass
+            if ok:
+                try:
+                    _ = app.ca.ca_database.process_ca_database()
+                    app.ca.store_ca_database()
+                except Exception:
+                    pass
 
     return EXIT_OK
 
@@ -353,21 +360,23 @@ def handle_cert_revoke(app: App) -> int:
 
     any_revoked = False
 
-    for cert_info in certs_to_revoke:
-        if "cn" in cert_info:
-            desc = cert_info["cn"]
-        elif "serial" in cert_info:
-            desc = f"Serial: {cert_info['serial']}"
-        else:
-            error("Certificate requires either a CN or a serial.", 1)
+    lock = VaultLock(app.op)
+    with lock("cert_revoke"):
+        for cert_info in certs_to_revoke:
+            if "cn" in cert_info:
+                desc = cert_info["cn"]
+            elif "serial" in cert_info:
+                desc = f"Serial: {cert_info['serial']}"
+            else:
+                error("Certificate requires either a CN or a serial.", 1)
 
-        title(f"Revoking the certificate [ {COLOUR_BRIGHT}{desc}{COLOUR_RESET} ]", 9)
+            title(f"Revoking the certificate [ {COLOUR_BRIGHT}{desc}{COLOUR_RESET} ]", 9)
 
-        success = app.ca.revoke_certificate(cert_info=cert_info)
-        print_result(success=bool(success))
-        any_revoked = any_revoked or bool(success)
+            success = app.ca.revoke_certificate(cert_info=cert_info)
+            print_result(success=bool(success))
+            any_revoked = any_revoked or bool(success)
 
-    if any_revoked:
-        print(app.ca.generate_crl())
+        if any_revoked:
+            print(app.ca.generate_crl())
 
     return EXIT_OK

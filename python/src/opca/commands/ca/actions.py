@@ -16,6 +16,7 @@ from opca.models import App
 from opca.reports.ca_list import ca_list
 from opca.services.ca import CertificateAuthority
 from opca.services.ca_errors import CAAlreadyExistsError, CAError, CANotFoundError, CAStorageError
+from opca.services.vault_lock import VaultLock
 from opca.utils.crypto import load_certificate_pem
 from opca.utils.files import read_bytes, write_bytes
 from opca.utils.formatting import error, warning, print_result, title
@@ -52,22 +53,24 @@ def handle_ca_init(app: App) -> int:
         if arg_value:
             ca_config[attr] = arg_value
 
-    try:
-        cert_authority = CertificateAuthority(
-            one_password=app.op,
-            config=ca_config,
-            op_config=DEFAULT_OP_CONF,
-        )
-        title(f'Created [ {COLOUR_BRIGHT}CA Certificate Bundle{COLOUR_RESET} ]', 9)
-        print_result(cert_authority.is_valid())
-        return EXIT_OK
+    lock = VaultLock(app.op)
+    with lock("ca_init"):
+        try:
+            cert_authority = CertificateAuthority(
+                one_password=app.op,
+                config=ca_config,
+                op_config=DEFAULT_OP_CONF,
+            )
+            title(f'Created [ {COLOUR_BRIGHT}CA Certificate Bundle{COLOUR_RESET} ]', 9)
+            print_result(cert_authority.is_valid())
+            return EXIT_OK
 
-    except CAAlreadyExistsError as e:
-        log.error(str(e))
-        return EXIT_FATAL
-    except CAError:
-        log.exception("Failed to initialize CA")
-        return EXIT_FATAL
+        except CAAlreadyExistsError as e:
+            log.error(str(e))
+            return EXIT_FATAL
+        except CAError:
+            log.exception("Failed to initialize CA")
+            return EXIT_FATAL
 
 def handle_ca_import(app: App) -> int:
     title('Importing a Certificate Authority from file', 3)
@@ -103,24 +106,26 @@ def handle_ca_import(app: App) -> int:
         if val is not None:
             ca_config[attr] = val
 
-    try:
-        ca = CertificateAuthority(
-            one_password=app.op,
-            config=ca_config,
-            op_config=DEFAULT_OP_CONF,
-        )
-    except CAAlreadyExistsError as e:
-        log.error(str(e))
-        return EXIT_FATAL
-    except CAError:
-        log.exception("Failed to import CA")
-        return EXIT_FATAL
+    lock = VaultLock(app.op)
+    with lock("ca_import"):
+        try:
+            ca = CertificateAuthority(
+                one_password=app.op,
+                config=ca_config,
+                op_config=DEFAULT_OP_CONF,
+            )
+        except CAAlreadyExistsError as e:
+            log.error(str(e))
+            return EXIT_FATAL
+        except CAError:
+            log.exception("Failed to import CA")
+            return EXIT_FATAL
 
-    title(f'Checking [ {COLOUR_BRIGHT}CA Certificate Bundle{COLOUR_RESET} ] in 1Password', 9)
-    print_result(app.op.item_exists(DEFAULT_OP_CONF["ca_title"]))
+        title(f'Checking [ {COLOUR_BRIGHT}CA Certificate Bundle{COLOUR_RESET} ] in 1Password', 9)
+        print_result(app.op.item_exists(DEFAULT_OP_CONF["ca_title"]))
 
-    title(f'Validating [ {COLOUR_BRIGHT}CA Certificate Bundle{COLOUR_RESET} ] in 1Password', 9)
-    print_result(ca.is_valid())
+        title(f'Validating [ {COLOUR_BRIGHT}CA Certificate Bundle{COLOUR_RESET} ] in 1Password', 9)
+        print_result(ca.is_valid())
 
     return EXIT_OK
 

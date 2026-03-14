@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -29,6 +30,7 @@ from opca.services.ca_errors import (
     DuplicateCertificateError,
     UnknownCommandError,
 )
+from opca.services.op_errors import StaleDatabaseError
 from opca.services.one_password import Op
 from opca.services.storage import StorageBackend, StorageRsync, StorageS3
 from opca.utils.datetime import format_datetime
@@ -110,6 +112,9 @@ class CertificateAuthority:
 
             ca_database_sql = result.stdout
             self.ca_database = CertificateAuthorityDB(data=ca_database_sql)
+            self.ca_database.download_fingerprint = hashlib.sha256(
+                ca_database_sql.encode("utf-8")
+            ).hexdigest()
             self.ca_certbundle = self.retrieve_certbundle(item_title=self.op_config['ca_title'])
 
             if self.ca_certbundle is None:
@@ -1032,19 +1037,51 @@ class CertificateAuthority:
     # ----------------
     # Persistence / upload methods
     # ----------------
+    def _verify_db_fingerprint(self) -> None:
+        """
+        Re-download the CA database and compare its fingerprint to the
+        one captured at retrieve time.  Raises StaleDatabaseError if
+        the remote copy has been modified by another user.
+
+        Skipped when no fingerprint is recorded (e.g. freshly initialised CAs).
+        """
+        if self.ca_database is None or self.ca_database.download_fingerprint is None:
+            return
+
+        result = self.one_password.get_document(self.op_config['ca_database_title'])
+        if result.returncode != 0:
+            return  # cannot verify — proceed optimistically
+
+        current_fingerprint = hashlib.sha256(
+            result.stdout.encode("utf-8")
+        ).hexdigest()
+
+        if current_fingerprint != self.ca_database.download_fingerprint:
+            raise StaleDatabaseError(
+                "The vault database has been modified by another user since "
+                "it was last downloaded. Reconnect to reload the latest "
+                "database and retry your operation."
+            )
+
+        # Update fingerprint to match what we are about to upload.
+        self.ca_database.download_fingerprint = hashlib.sha256(
+            self.ca_database.export_database()
+        ).hexdigest()
+
     def store_ca_database(self):
         """
-        Store a CA certificate database into 1Password
+        Store a CA certificate database into 1Password.
 
-        Args:
-            None
-
-        Returns:
-            subprocess.CompletedProcess: Output from 1Password CLI
+        Before uploading, verifies the remote database has not been
+        modified since it was downloaded (fingerprint check).  This
+        catches concurrent modifications even when the advisory lock
+        is bypassed.
 
         Raises:
-            None
+            StaleDatabaseError: If the remote database has changed.
         """
+
+        self._verify_db_fingerprint()
 
         result = self.one_password.store_document(action='auto',
                         item_title=self.op_config['ca_database_title'],

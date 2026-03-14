@@ -13,6 +13,7 @@ from opca.constants import (
     COLOUR_RESET,
 )
 from opca.services.ca_errors import CAStorageError, CANotFoundError, CAError
+from opca.services.vault_lock import VaultLock
 from opca.utils.formatting import error, warning, print_result, title
 from opca.utils.files import write_bytes
 
@@ -22,7 +23,9 @@ log = logging.getLogger(__name__)
 def handle_crl_create(app: App) -> int:
     title("Create Certificate Revocation List", level=2)
 
-    crl = app.ca.generate_crl()
+    lock = VaultLock(app.op)
+    with lock("crl_create"):
+        crl = app.ca.generate_crl()
 
     title(f'Checking generated [ { COLOUR_BRIGHT }CRL Validity{ COLOUR_RESET } ]', 9)
     print_result(app.ca.is_crl_valid(crl.encode('utf-8')))

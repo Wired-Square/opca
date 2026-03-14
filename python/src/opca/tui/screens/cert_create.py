@@ -74,25 +74,26 @@ class CertCreateScreen(Screen):
         with op_status_context(self, f"Creating certificate for {cn}..."):
             ctx = self.app.tui_context
             try:
-                if ctx.op.item_exists(cn):
-                    self.app.call_from_thread(
-                        self.query_one("#create-status", Static).update,
-                        f"[red]'{cn}' already exists in 1Password[/red]",
+                with ctx.locked_mutation("cert_create"):
+                    if ctx.op.item_exists(cn):
+                        self.app.call_from_thread(
+                            self.query_one("#create-status", Static).update,
+                            f"[red]'{cn}' already exists in 1Password[/red]",
+                        )
+                        return
+
+                    base_config = ctx.ca.ca_certbundle.get_config().copy()
+                    base_config["key_size"] = DEFAULT_KEY_SIZE[cert_type]
+                    base_config["cn"] = cn
+                    if alt_names:
+                        base_config["alt_dns_names"] = alt_names
+
+                    bundle = ctx.ca.generate_certificate_bundle(
+                        cert_type=cert_type,
+                        item_title=cn,
+                        config=base_config,
                     )
-                    return
-
-                base_config = ctx.ca.ca_certbundle.get_config().copy()
-                base_config["key_size"] = DEFAULT_KEY_SIZE[cert_type]
-                base_config["cn"] = cn
-                if alt_names:
-                    base_config["alt_dns_names"] = alt_names
-
-                bundle = ctx.ca.generate_certificate_bundle(
-                    cert_type=cert_type,
-                    item_title=cn,
-                    config=base_config,
-                )
-                valid = bundle.is_valid()
+                    valid = bundle.is_valid()
                 self.app.call_from_thread(self._on_created, cn, valid)
             except (Exception, SystemExit) as e:
                 self.app.call_from_thread(

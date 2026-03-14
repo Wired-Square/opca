@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from argparse import Namespace
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Generator, Optional
 
 from opca.models.app import App
 from opca.services.ca import CertificateAuthority, prepare_cert_authority
 from opca.services.ca_errors import CANotFoundError, CADatabaseError
 from opca.services.one_password import Op
+from opca.services.vault_lock import VaultLock
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +83,29 @@ class TuiContext:
         new_conn.executescript(sql_dump)
         db.conn.close()
         db.conn = new_conn
+
+    @contextlib.contextmanager
+    def locked_mutation(self, operation: str) -> Generator[None, None, None]:
+        """
+        Context manager that acquires the vault lock and refreshes the
+        in-memory CA database before yielding.
+
+        Usage inside a ``@work(thread=True)`` method::
+
+            with ctx.locked_mutation("cert_create"):
+                ctx.ca.generate_certificate_bundle(...)
+
+        On exit the lock is released automatically (even on error).
+        """
+        if self.op is None:
+            raise RuntimeError("Not connected to 1Password")
+
+        lock = VaultLock(self.op)
+        with lock(operation):
+            # Re-download the database under lock so the TUI always
+            # works with the freshest state.
+            self.reload_ca()
+            yield
 
     def make_app(self, **kwargs: object) -> App:
         """

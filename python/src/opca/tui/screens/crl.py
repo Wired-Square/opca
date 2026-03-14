@@ -169,7 +169,8 @@ class CRLScreen(Screen):
         ctx = self.app.tui_context
         with op_status_context(self, "Generating CRL..."):
             try:
-                ctx.ca.generate_crl()
+                with ctx.locked_mutation("crl_create"):
+                    ctx.ca.generate_crl()
                 self.app.call_from_thread(log.log_success, "CRL generated")
                 self._load_info_inner()
             except (Exception, SystemExit) as e:

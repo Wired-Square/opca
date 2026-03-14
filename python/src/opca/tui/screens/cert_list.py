@@ -305,7 +305,8 @@ class CertListScreen(Screen):
             ok = False
             try:
                 ctx = self.app.tui_context
-                ok = bool(ctx.ca.renew_certificate_bundle(cert_info={"serial": serial}))
+                with ctx.locked_mutation("cert_renew"):
+                    ok = bool(ctx.ca.renew_certificate_bundle(cert_info={"serial": serial}))
             except (Exception, SystemExit) as e:
                 self.app.call_from_thread(self._notify_error, "Renew", str(e))
             finally:
@@ -327,9 +328,10 @@ class CertListScreen(Screen):
             ok = False
             try:
                 ctx = self.app.tui_context
-                ok = bool(ctx.ca.revoke_certificate(cert_info={"serial": serial}))
-                if ok:
-                    ctx.ca.generate_crl()
+                with ctx.locked_mutation("cert_revoke"):
+                    ok = bool(ctx.ca.revoke_certificate(cert_info={"serial": serial}))
+                    if ok:
+                        ctx.ca.generate_crl()
             except (Exception, SystemExit) as e:
                 self.app.call_from_thread(self._notify_error, "Revoke", str(e))
             finally:

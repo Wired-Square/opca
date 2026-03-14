@@ -58,6 +58,7 @@ class CertificateAuthorityDB:
         self.ext_certs_expires_soon: Set[str] = set()
         self.ext_certs_valid: Set[str] = set()
         self._dirty = True
+        self.download_fingerprint: Optional[str] = None
         self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.config_attrs: Tuple[str, ...] = (
             "next_serial",
@@ -656,9 +657,9 @@ class CertificateAuthorityDB:
         """
         cursor = self.conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM certificate_authority")
-        count = cursor.fetchone()[0]
+        row = cursor.fetchone()
         cursor.close()
-        return count
+        return row[0] if row else 0
 
     def export_database(self) -> bytes:
         """ Export the entire database to a io.BytesIO object """

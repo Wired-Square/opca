@@ -44,6 +44,10 @@ async def connect_and_get_dashboard(app: OpcaTuiApp, pilot):
     assert isinstance(app.screen, Dashboard), (
         f"Expected Dashboard after connect, got {type(app.screen).__name__}"
     )
+    # Give the event loop time to mount the Dashboard and start _show_welcome,
+    # then wait for that worker to finish before the test proceeds.
+    await pilot.pause(delay=0.5)
+    await wait_for_workers(pilot)
 
 
 def _make_app(op_account: str, vault_name: str) -> OpcaTuiApp:

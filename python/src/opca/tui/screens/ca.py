@@ -248,8 +248,9 @@ class CAScreen(TabbedViewMixin, Screen):
                 for key, widget_id in fields.items():
                     updates[key] = self.query_one(widget_id, Input).value.strip()
 
-                ctx.ca.ca_database.update_config(updates)
-                ctx.ca.store_ca_database()
+                with ctx.locked_mutation(f"save_{label.lower()}"):
+                    ctx.ca.ca_database.update_config(updates)
+                    ctx.ca.store_ca_database()
                 self.app.call_from_thread(log.log_success, f"{label} saved")
             except (Exception, SystemExit) as e:
                 self.app.call_from_thread(log.log_error, f"Error saving {label}: {e}")
@@ -294,6 +295,7 @@ class CAScreen(TabbedViewMixin, Screen):
         with op_status_context(self, "Initialising CA..."):
             try:
                 from opca.services.ca import CertificateAuthority
+                from opca.services.vault_lock import VaultLock
 
                 ca_config = {
                     "command": "init",
@@ -307,11 +309,13 @@ class CAScreen(TabbedViewMixin, Screen):
                     "key_size": DEFAULT_KEY_SIZE["ca"],
                 }
 
-                CertificateAuthority(
-                    one_password=ctx.op,
-                    config=ca_config,
-                    op_config=DEFAULT_OP_CONF,
-                )
+                lock = VaultLock(ctx.op)
+                with lock("ca_init"):
+                    CertificateAuthority(
+                        one_password=ctx.op,
+                        config=ca_config,
+                        op_config=DEFAULT_OP_CONF,
+                    )
 
                 ctx.reload_ca()
                 self.app.call_from_thread(self._on_init_done)
