@@ -93,6 +93,7 @@ DEFAULT_OP_CONF = {
     'cert_item': 'certificate',
     'cert_type_item': 'type[text]',
     'ca_cert_item': 'ca_certificate',
+    'chain_item': 'certificate_chain',
     'csr_item': 'certificate_signing_request',
     'start_date_item': 'not_before[text]',
     'expiry_date_item': 'not_after[text]',

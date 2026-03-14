@@ -1156,6 +1156,12 @@ class CertificateAuthority:
         if certbundle.private_key is not None:
             attributes.append(f'{self.op_config["key_item"]}={certbundle.get_private_key()}')
 
+        if certbundle.certificate_chain is not None:
+            chain_str = certbundle.certificate_chain
+            if isinstance(chain_str, bytes):
+                chain_str = chain_str.decode('utf-8', errors='replace')
+            attributes.append(f'{self.op_config["chain_item"]}={chain_str}')
+
         result = self.one_password.store_item(action='create',
                                     item_title=op_title,
                                     attributes=attributes)

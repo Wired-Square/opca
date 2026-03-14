@@ -37,6 +37,25 @@ class OpcaTuiApp(App):
     ) -> None:
         super().__init__(**kwargs)
         self.tui_context = TuiContext(account=account, vault=vault)
+        # Redirect Python logging away from stderr so it does not corrupt the
+        # Textual display.  Any StreamHandlers that point at the real terminal
+        # must be removed before Textual takes ownership of the TTY.
+        self._saved_handlers: list[logging.Handler] = []
+        root = logging.getLogger()
+        for handler in root.handlers[:]:
+            if isinstance(handler, logging.StreamHandler) and not isinstance(
+                handler, logging.FileHandler
+            ):
+                root.removeHandler(handler)
+                self._saved_handlers.append(handler)
+
+    def _on_exit_app(self) -> None:
+        """Restore logging handlers on exit."""
+        root = logging.getLogger()
+        for handler in self._saved_handlers:
+            root.addHandler(handler)
+        self._saved_handlers.clear()
+        super()._on_exit_app()
 
     def on_key(self, event: Key) -> None:
         """Allow left/right arrow keys to navigate between buttons."""

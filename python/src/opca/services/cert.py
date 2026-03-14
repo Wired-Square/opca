@@ -57,6 +57,7 @@ class CertificateBundle:
         ] = None
         self.private_key_passphrase: Optional[bytes] = None # TODO: Implement private key passphrase
         self.certificate: Optional[x509.Certificate] = None
+        self.certificate_chain: Optional[bytes] = None
         self.config_attrs = (
             'org',
             'ou',

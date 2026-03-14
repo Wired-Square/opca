@@ -12,7 +12,7 @@ from opca.tui.widgets.file_input import FileInput
 from opca.tui.widgets.log_panel import LogPanel
 from opca.tui.widgets.op_status import OpStatus
 from opca.tui.widgets.screen_header import ScreenHeader
-from opca.tui.workers import capture_handler, op_status_context
+from opca.tui.workers import op_status_context
 
 
 class CertImportScreen(Screen):
@@ -31,16 +31,25 @@ class CertImportScreen(Screen):
                 id="fi-cert",
             )
 
-            yield Static(
-                "[dim]Provide either a private key OR a CSR CN (not both):[/dim]",
-                classes="form-label",
-            )
-
             yield FileInput(
                 label="Private Key (optional):",
                 placeholder="File path or paste PEM private key",
                 input_id="key-input",
                 id="fi-key",
+            )
+
+            yield Static("Passphrase (for encrypted private keys):", classes="form-label")
+            yield Input(
+                placeholder="Leave blank if key is not encrypted",
+                password=True,
+                id="passphrase-input",
+            )
+
+            yield FileInput(
+                label="Certificate Chain (optional):",
+                placeholder="File path or paste PEM intermediate certificates",
+                input_id="chain-input",
+                id="fi-chain",
             )
 
             yield Static("CSR Common Name (optional):", classes="form-label")
@@ -52,6 +61,11 @@ class CertImportScreen(Screen):
                     id="csr-cn-select",
                 )
                 yield Button("Detect", variant="default", id="btn-detect-csr")
+
+            yield Static(
+                "[dim]Provide either a private key OR a CSR CN (not both).[/dim]",
+                classes="form-label",
+            )
 
             with Horizontal(classes="button-row"):
                 yield Button("Import", variant="primary", id="btn-import")
@@ -149,14 +163,18 @@ class CertImportScreen(Screen):
 
     @work(thread=True, exclusive=True, group="op")
     def _do_import_with_key(self) -> None:
-        """Import certificate + private key. Auto-detects local vs external."""
+        """Import certificate + private key (+ optional chain). Auto-detects local vs external."""
         with op_status_context(self, "Importing certificate..."):
             try:
                 fi_cert = self.query_one("#fi-cert", FileInput)
                 fi_key = self.query_one("#fi-key", FileInput)
+                fi_chain = self.query_one("#fi-chain", FileInput)
+                passphrase_input = self.query_one("#passphrase-input", Input)
 
                 cert_data = fi_cert.get_content()
                 key_data = fi_key.get_content()
+                chain_data = fi_chain.get_content()
+                passphrase_text = passphrase_input.value.strip()
 
                 if not cert_data:
                     self.app.call_from_thread(self._show_error, "Could not read certificate.")
@@ -164,6 +182,47 @@ class CertImportScreen(Screen):
                 if not key_data:
                     self.app.call_from_thread(self._show_error, "Could not read private key.")
                     return
+
+                # Try to detect encrypted private key and apply passphrase
+                passphrase: bytes | None = None
+                if passphrase_text:
+                    passphrase = passphrase_text.encode("utf-8")
+                elif b"ENCRYPTED" in key_data:
+                    self.app.call_from_thread(
+                        self._show_error,
+                        "Private key appears to be encrypted. Please provide the passphrase.",
+                    )
+                    return
+
+                # Validate the private key can be loaded
+                from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+                try:
+                    load_pem_private_key(key_data, passphrase)
+                except (ValueError, TypeError) as e:
+                    if "password" in str(e).lower() or "decrypt" in str(e).lower():
+                        self.app.call_from_thread(
+                            self._show_error,
+                            "Failed to decrypt private key. Check passphrase.",
+                        )
+                    else:
+                        self.app.call_from_thread(self._show_error, f"Invalid private key: {e}")
+                    return
+
+                # If passphrase was provided, re-export key as unencrypted PEM for storage
+                if passphrase:
+                    from cryptography.hazmat.primitives.serialization import (
+                        Encoding,
+                        NoEncryption,
+                        PrivateFormat,
+                    )
+
+                    decrypted_key = load_pem_private_key(key_data, passphrase)
+                    key_data = decrypted_key.private_bytes(
+                        encoding=Encoding.PEM,
+                        format=PrivateFormat.PKCS8,
+                        encryption_algorithm=NoEncryption(),
+                    )
 
                 # Determine if signed by our CA
                 from cryptography import x509
@@ -182,24 +241,60 @@ class CertImportScreen(Screen):
 
                 ctx = self.app.tui_context
                 is_external = not ctx.ca.is_cert_valid(certificate)
+                cert_type = "external" if is_external else "imported"
 
-                from opca.commands.cert.actions import handle_cert_import
+                cn = None
+                for attr in certificate.subject:
+                    if attr.oid == x509.oid.NameOID.COMMON_NAME:
+                        cn = attr.value
+                        break
 
-                app = ctx.make_app(
-                    command="cert",
-                    subcommand="import",
-                    **fi_cert.as_kwarg("cert_file"),
-                    **fi_key.as_kwarg("key_file"),
-                    external=is_external,
-                    cn=None,
-                )
-                code, output = capture_handler(handle_cert_import, app)
+                config: dict = {
+                    "type": cert_type,
+                    "certificate": cert_data,
+                    "private_key": key_data,
+                }
+
+                with ctx.locked_mutation("cert_import"):
+                    cert_bundle = ctx.ca.import_certificate_bundle(
+                        cert_type=cert_type,
+                        config=config,
+                        item_title=cn,
+                    )
+
+                    if is_external:
+                        from cryptography.x509.oid import NameOID
+
+                        issuer_attrs = certificate.issuer.get_attributes_for_oid(
+                            NameOID.COMMON_NAME
+                        )
+                        issuer = issuer_attrs[0].value if issuer_attrs else "Unknown"
+                        issuer_subject = certificate.issuer.rfc4514_string()
+                    else:
+                        issuer = None
+                        issuer_subject = None
+
+                        # Advance serial counter for locally signed imports
+                        cert_serial = certificate.serial_number
+                        ctx.ca.ca_database.increment_serial(
+                            serial_type="cert",
+                            serial_number=cert_serial,
+                        )
+
+                    # Attach certificate chain to bundle if provided
+                    if chain_data:
+                        cert_bundle.certificate_chain = chain_data
+
+                    result = ctx.ca.store_certbundle(
+                        cert_bundle,
+                        issuer=issuer,
+                        issuer_subject=issuer_subject,
+                    )
 
                 log = self.query_one("#import-log", LogPanel)
-                self.app.call_from_thread(log.write, output or f"Exit code: {code}")
+                label = "external" if is_external else "local"
 
-                if code == 0:
-                    label = "external" if is_external else "local"
+                if result.returncode == 0:
                     self.app.call_from_thread(
                         self.notify,
                         f"Certificate imported as {label}.",
@@ -207,6 +302,10 @@ class CertImportScreen(Screen):
                     )
                     self.app.call_from_thread(self.app.pop_screen)
                 else:
+                    self.app.call_from_thread(
+                        log.write,
+                        result.stderr.decode("utf-8", errors="replace") if result.stderr else "Import failed.",
+                    )
                     self.app.call_from_thread(self._show_error, "Import failed. See log.")
 
             except (Exception, SystemExit) as e:
@@ -225,6 +324,7 @@ class CertImportScreen(Screen):
                     return
 
                 from opca.commands.csr.actions import handle_csr_import
+                from opca.tui.workers import capture_handler
 
                 ctx = self.app.tui_context
                 app = ctx.make_app(
