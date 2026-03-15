@@ -24,6 +24,9 @@ MENU_ITEMS = [
     ("Vault", "vault_backup"),
 ]
 
+# Screens allowed without an initialised CA
+_UNGATED_SCREENS = {"ca", "vault_backup"}
+
 
 class Dashboard(Screen):
     """Main dashboard with sidebar navigation and content area."""
@@ -65,12 +68,26 @@ class Dashboard(Screen):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item_id = event.item.id or ""
         screen_id = item_id.replace("menu-", "")
-        self._navigate_to(screen_id)
+        if self._is_screen_allowed(screen_id):
+            self._navigate_to(screen_id)
 
     def action_nav(self, index: int) -> None:
         if 0 <= index < len(MENU_ITEMS):
             _, screen_id = MENU_ITEMS[index]
-            self._navigate_to(screen_id)
+            if self._is_screen_allowed(screen_id):
+                self._navigate_to(screen_id)
+
+    def _is_screen_allowed(self, screen_id: str) -> bool:
+        """Check whether navigation to *screen_id* is permitted."""
+        if self.app.tui_context.has_ca:
+            return True
+        if screen_id in _UNGATED_SCREENS:
+            return True
+        self.notify(
+            "Initialise or restore a CA first.",
+            severity="warning",
+        )
+        return False
 
     def action_refresh(self) -> None:
         screen_id = getattr(self, "_current_screen_id", None)
@@ -84,6 +101,19 @@ class Dashboard(Screen):
     def on_screen_resume(self) -> None:
         self._show_welcome()
 
+    def _update_menu_states(self) -> None:
+        """Enable or disable sidebar items based on CA availability."""
+        has_ca = self.app.tui_context.has_ca
+        for _name, sid in MENU_ITEMS:
+            try:
+                item = self.query_one(f"#menu-{sid}", ListItem)
+            except Exception:
+                continue
+            if has_ca or sid in _UNGATED_SCREENS:
+                item.remove_class("disabled")
+            else:
+                item.add_class("disabled")
+
     @work(thread=True, exclusive=True, group="op")
     def _show_welcome(self) -> None:
         self.app.call_from_thread(
@@ -91,6 +121,7 @@ class Dashboard(Screen):
         )
         try:
             ctx = self.app.tui_context
+            self.app.call_from_thread(self._update_menu_states)
 
             if ctx.has_ca:
                 db = ctx.ca.ca_database

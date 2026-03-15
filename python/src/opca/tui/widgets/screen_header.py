@@ -22,6 +22,7 @@ class ScreenHeader(Static):
             yield Static(f"v{__version__}", id="screen-header-version")
             yield Static("\u2500\u2500", id="screen-header-sep")
             yield Static(self._page_name, id="screen-header-page")
+            yield Static("", id="screen-header-badge")
             yield Static("", id="screen-header-context")
 
     def on_mount(self) -> None:
@@ -38,3 +39,10 @@ class ScreenHeader(Static):
         self.query_one("#screen-header-context", Static).update(
             " \u00b7 ".join(parts)
         )
+        badge = self.query_one("#screen-header-badge", Static)
+        if ctx.connected and not ctx.has_ca:
+            badge.update("empty vault")
+            badge.display = True
+        else:
+            badge.update("")
+            badge.display = False

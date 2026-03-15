@@ -37,6 +37,10 @@ Screen {
     text-style: bold;
 }
 
+#sidebar ListItem.disabled {
+    opacity: 0.4;
+}
+
 /* --- Content area --- */
 #content {
     width: 1fr;
@@ -77,6 +81,14 @@ ScreenHeader {
     width: 1fr;
     text-style: bold;
     color: $text;
+}
+
+#screen-header-badge {
+    width: auto;
+    color: $warning;
+    text-style: bold;
+    padding: 0 1;
+    display: none;
 }
 
 #screen-header-context {

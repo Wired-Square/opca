@@ -80,13 +80,19 @@ class VaultBackupScreen(TabbedViewMixin, Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self._switch_view("backup")
-        # Pre-fill default backup filename with full path under home directory
         ctx = self.app.tui_context
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
-        vault_name = ctx.op.vault if ctx.connected else "vault"
-        default_path = Path.home() / f"{vault_name}-{timestamp}.opca"
-        self.query_one("#backup-output", Input).value = str(default_path)
+
+        if ctx.has_ca:
+            self._switch_view("backup")
+            # Pre-fill default backup filename with full path under home directory
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+            vault_name = ctx.op.vault if ctx.connected else "vault"
+            default_path = Path.home() / f"{vault_name}-{timestamp}.opca"
+            self.query_one("#backup-output", Input).value = str(default_path)
+        else:
+            self._switch_view("restore")
+            # Disable the Backup tab when the vault is empty
+            self.query_one("#nav-backup", Button).disabled = True
 
     # --- Navigation ---
 

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Empty vault gating: sidebar items and keyboard shortcuts for screens that require a CA are disabled until a CA is initialised or restored
+- Empty vault badge in the screen header when connected to a vault with no CA
+- Vault Backup tab is disabled on an empty vault; the screen defaults to Restore
 - Certificate import: passphrase field for encrypted private keys with automatic decryption and re-export as unencrypted PKCS8 PEM
 - Certificate import: certificate chain field for intermediate CA certificates, stored as `certificate_chain` in 1Password
 - `certificate_chain` field on CertificateBundle for holding intermediate CA PEM data
