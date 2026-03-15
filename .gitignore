@@ -2,6 +2,7 @@
 .DS_Store
 .vscode/
 CLAUDE.md
+docs/local/
 
 # Python
 *.pyc
@@ -13,11 +14,15 @@ python/dist/
 
 # Rust
 /target/
+rust/target/
 rust/crates/opca-tauri/gen/
 
 # Frontend
 frontend/node_modules/
 frontend/dist/
+rust/node_modules/
+rust/frontend/node_modules/
+rust/frontend/dist/
 
 # Secrets / certificates
 *.crt

@@ -1,0 +1,28 @@
+[package]
+name = "opca-core"
+version.workspace = true
+edition = "2021"
+description = "OPCA core library — PKI management backed by 1Password"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+gethostname = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+which = "7"
+rusqlite = { version = "0.33", features = ["bundled", "backup"] }
+tempfile = "3"
+shellexpand = "3"
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", features = ["hmac"] }
+sha2 = "0.10"
+rand = "0.9"
+openssl = { version = "0.10", features = ["vendored"] }
+openssl-sys = "0.9"
+foreign-types = "0.3"
+rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+
+[features]
+default = []

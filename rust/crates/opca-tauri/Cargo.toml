@@ -1,0 +1,20 @@
+[package]
+name = "opca-tauri"
+version.workspace = true
+edition = "2021"
+description = "OPCA desktop application — Tauri 2 GUI"
+
+[dependencies]
+opca-core = { path = "../opca-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+chrono = "0.4"
+openssl = "0.10"
+dirs = "6"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

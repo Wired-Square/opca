@@ -1,0 +1,757 @@
+import { Show, For, createSignal, createResource } from "solid-js";
+import {
+  getOpenVpnParams,
+  generateOpenVpnDh,
+  generateOpenVpnTa,
+  setupOpenVpnServer,
+  listOpenVpnTemplates,
+  getOpenVpnTemplate,
+  saveOpenVpnTemplate,
+  listVpnClients,
+  generateOpenVpnProfile,
+  listOpenVpnProfiles,
+  sendProfileToVault,
+} from "../api/openvpn";
+import { formatDate } from "../utils/dates";
+import Spinner from "../components/Spinner";
+import VaultPicker from "../components/VaultPicker";
+import type {
+  OpenVpnServerParams,
+  OpenVpnTemplateItem,
+  OpenVpnProfileItem,
+} from "../api/types";
+
+type Tab = "client" | "server" | "profiles";
+
+export default function OpenVPN() {
+  const [tab, setTab] = createSignal<Tab>("client");
+  const [error, setError] = createSignal<string | null>(null);
+  const [success, setSuccess] = createSignal<string | null>(null);
+
+  // ── Server tab state ──────────────────────────────────────────
+  const [params, { refetch: refetchParams }] =
+    createResource<OpenVpnServerParams>(getOpenVpnParams);
+  const [templates, { refetch: refetchTemplates }] =
+    createResource<OpenVpnTemplateItem[]>(listOpenVpnTemplates);
+  const [selectedTemplate, setSelectedTemplate] = createSignal("");
+  const [templateContent, setTemplateContent] = createSignal("");
+  const [loadingTemplate, setLoadingTemplate] = createSignal(false);
+  const [acting, setActing] = createSignal(false);
+  const [generatingDh, setGeneratingDh] = createSignal(false);
+  const [generatingTa, setGeneratingTa] = createSignal(false);
+  const [newTemplateName, setNewTemplateName] = createSignal("");
+  const [showNewTemplate, setShowNewTemplate] = createSignal(false);
+
+  // ── Client tab state ──────────────────────────────────────────
+  const [vpnClients, { refetch: refetchClients }] =
+    createResource<string[]>(listVpnClients);
+  const [clientTemplate, setClientTemplate] = createSignal("");
+  const [clientCn, setClientCn] = createSignal("");
+  const [clientDestVault, setClientDestVault] = createSignal("");
+  const [generatedProfile, setGeneratedProfile] = createSignal<OpenVpnProfileItem | null>(null);
+  const [sendingProfile, setSendingProfile] = createSignal(false);
+
+  // ── Profiles tab state ────────────────────────────────────────
+  const [profiles, { refetch: refetchProfiles }] =
+    createResource<OpenVpnProfileItem[]>(listOpenVpnProfiles);
+  const [selectedProfile, setSelectedProfile] = createSignal<OpenVpnProfileItem | null>(null);
+  const [destVault, setDestVault] = createSignal("");
+
+  function switchTab(t: Tab) {
+    setTab(t);
+    setError(null);
+    setSuccess(null);
+    if (t === "server") {
+      refetchParams();
+      refetchTemplates();
+    } else if (t === "client") {
+      refetchTemplates();
+      refetchClients();
+    } else if (t === "profiles") {
+      refetchProfiles();
+    }
+  }
+
+  // ── Server handlers ───────────────────────────────────────────
+
+  async function handleLoadTemplate(name: string) {
+    setSelectedTemplate(name);
+    if (!name) {
+      setTemplateContent("");
+      return;
+    }
+    setLoadingTemplate(true);
+    setError(null);
+    try {
+      const detail = await getOpenVpnTemplate(name);
+      setTemplateContent(detail.content);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoadingTemplate(false);
+    }
+  }
+
+  async function handleSaveTemplate() {
+    const name = selectedTemplate();
+    const content = templateContent();
+    if (!name) { setError("Select a template first"); return; }
+    if (!content.trim()) { setError("Template content is empty"); return; }
+    setActing(true);
+    setError(null);
+    try {
+      await saveOpenVpnTemplate(name, content);
+      setSuccess(`Template '${name}' saved`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function handleCreateTemplate() {
+    const name = newTemplateName().trim();
+    if (!name) { setError("Template name is required"); return; }
+    setActing(true);
+    setError(null);
+    try {
+      await setupOpenVpnServer({ template_name: name });
+      setShowNewTemplate(false);
+      setNewTemplateName("");
+      await refetchTemplates();
+      refetchParams();
+      await handleLoadTemplate(name);
+      setSuccess(`Template '${name}' created with server setup`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function handleGenerateDh() {
+    setGeneratingDh(true);
+    setError(null);
+    try {
+      await generateOpenVpnDh();
+      setSuccess("DH parameters generated");
+      refetchParams();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setGeneratingDh(false);
+    }
+  }
+
+  async function handleGenerateTa() {
+    setGeneratingTa(true);
+    setError(null);
+    try {
+      await generateOpenVpnTa();
+      setSuccess("TLS Authentication key generated");
+      refetchParams();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setGeneratingTa(false);
+    }
+  }
+
+  // ── Client handlers ───────────────────────────────────────────
+
+  async function handleGenerateProfile() {
+    const tmpl = clientTemplate();
+    const cn = clientCn();
+    if (!tmpl && !cn) { setError("Please select a template and a VPN client before generating a profile."); setSuccess(null); return; }
+    if (!tmpl) { setError("Please select a template before generating a profile."); setSuccess(null); return; }
+    if (!cn) { setError("Please select a VPN client before generating a profile."); setSuccess(null); return; }
+    setActing(true);
+    setError(null);
+    setGeneratedProfile(null);
+    try {
+      const profile = await generateOpenVpnProfile({ cn, template_name: tmpl });
+      setGeneratedProfile(profile);
+      setSuccess(`Profile generated for '${cn}'`);
+      setClientCn("");
+      setClientDestVault("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function handleSendGeneratedProfile() {
+    const profile = generatedProfile();
+    const vault = clientDestVault().trim();
+    if (!profile || !vault) return;
+    setSendingProfile(true);
+    setError(null);
+    try {
+      await sendProfileToVault(profile.cn, vault);
+      setSuccess(`Sent VPN_${profile.cn} to vault '${vault}'`);
+      setGeneratedProfile(null);
+      setClientDestVault("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSendingProfile(false);
+    }
+  }
+
+  // ── Profiles handlers ─────────────────────────────────────────
+
+  async function handleSendToVault() {
+    const profile = selectedProfile();
+    const vault = destVault().trim();
+    if (!profile) { setError("Select a profile from the table"); return; }
+    if (!vault) { setError("Enter a destination vault"); return; }
+    setActing(true);
+    setError(null);
+    try {
+      await sendProfileToVault(profile.cn, vault);
+      setSuccess(`Sent VPN_${profile.cn} to vault '${vault}'`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setActing(false);
+    }
+  }
+
+  return (
+    <div class="page-openvpn">
+      <div class="page-header">
+        <h2>OpenVPN Management</h2>
+      </div>
+
+      <div class="tab-bar">
+        <button
+          class={`tab-btn ${tab() === "client" ? "tab-active" : ""}`}
+          onClick={() => switchTab("client")}
+        >
+          Client
+        </button>
+        <button
+          class={`tab-btn ${tab() === "server" ? "tab-active" : ""}`}
+          onClick={() => switchTab("server")}
+        >
+          Server
+        </button>
+        <button
+          class={`tab-btn ${tab() === "profiles" ? "tab-active" : ""}`}
+          onClick={() => switchTab("profiles")}
+        >
+          Profiles
+        </button>
+      </div>
+
+      {/* ── Client Tab ─────────────────────────────────────────── */}
+      <Show when={tab() === "client"}>
+        <div class="tab-content">
+          <div class="form-group">
+            <label class="form-label">Template</label>
+            <select
+              class="form-select"
+              value={clientTemplate()}
+              onChange={(e) => setClientTemplate(e.currentTarget.value)}
+            >
+              <option value="">Select template</option>
+              <For each={templates()}>
+                {(t) => <option value={t.name}>{t.name}</option>}
+              </For>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Client CN</label>
+            <Show when={vpnClients.loading}>
+              <Spinner message="Loading VPN clients..." small />
+            </Show>
+            <select
+              class="form-select"
+              value={clientCn()}
+              onChange={(e) => setClientCn(e.currentTarget.value)}
+            >
+              <option value="">Select VPN client</option>
+              <For each={vpnClients()}>
+                {(cn) => <option value={cn}>{cn}</option>}
+              </For>
+            </select>
+          </div>
+
+          <div class="form-actions">
+            <button
+              class="btn-primary"
+              onClick={handleGenerateProfile}
+              disabled={acting()}
+            >
+              {acting() ? "Generating..." : "Generate Profile"}
+            </button>
+          </div>
+
+          <Show when={generatedProfile()}>
+            {(profile) => (
+              <div class="generated-profile-section">
+                <p class="page-success">
+                  Profile generated for '{profile().cn}' (stored as {profile().title})
+                </p>
+                <div class="form-group">
+                  <label class="form-label">Send to vault (optional)</label>
+                  <VaultPicker value={clientDestVault()} onChange={setClientDestVault} />
+                </div>
+                <div class="form-actions">
+                  <button
+                    class="btn-primary"
+                    onClick={handleSendGeneratedProfile}
+                    disabled={sendingProfile() || !clientDestVault().trim()}
+                  >
+                    {sendingProfile() ? "Sending..." : "Send to Vault"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </Show>
+        </div>
+      </Show>
+
+      {/* ── Server Tab ─────────────────────────────────────────── */}
+      <Show when={tab() === "server"}>
+        <div class="tab-content">
+          <Show when={params.loading}>
+            <Spinner message="Loading server parameters..." />
+          </Show>
+
+          <Show when={params()}>
+            {(p) => (
+              <div class="server-params">
+                <div class="params-grid">
+                  <Row label="Hostname" value={p().hostname} mono />
+                  <Row label="Port" value={p().port} mono />
+                  <Row label="Cipher" value={p().cipher} mono />
+                  <Row label="Auth" value={p().auth} mono />
+                  <Row
+                    label="DH Parameters"
+                    value={p().has_dh ? `${p().dh_key_size ?? "?"} bits` : "Not generated"}
+                  />
+                  <Row
+                    label="TLS Auth Key"
+                    value={p().has_ta ? `${p().ta_key_size ?? "?"} bits` : "Not generated"}
+                  />
+                </div>
+
+                <div class="server-actions">
+                  <button
+                    class="btn-secondary"
+                    onClick={handleGenerateDh}
+                    disabled={generatingDh() || generatingTa() || p().has_dh}
+                  >
+                    {generatingDh() ? "Generating..." : "Generate DH"}
+                  </button>
+                  <button
+                    class="btn-secondary"
+                    onClick={handleGenerateTa}
+                    disabled={generatingDh() || generatingTa() || p().has_ta}
+                  >
+                    {generatingTa() ? "Generating..." : "Generate TA Key"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </Show>
+
+          <div class="template-section">
+            <h3>Templates</h3>
+            <div class="template-header">
+              <select
+                class="form-select"
+                value={selectedTemplate()}
+                onChange={(e) => handleLoadTemplate(e.currentTarget.value)}
+              >
+                <option value="">Select template</option>
+                <For each={templates()}>
+                  {(t) => <option value={t.name}>{t.name}</option>}
+                </For>
+              </select>
+              <button
+                class="btn-ghost"
+                onClick={() => setShowNewTemplate(!showNewTemplate())}
+              >
+                New
+              </button>
+            </div>
+
+            <Show when={showNewTemplate()}>
+              <div class="new-template-row">
+                <input
+                  type="text"
+                  placeholder="Template name"
+                  value={newTemplateName()}
+                  onInput={(e) => setNewTemplateName(e.currentTarget.value)}
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="off"
+                  spellcheck={false}
+                />
+                <button
+                  class="btn-primary"
+                  onClick={handleCreateTemplate}
+                  disabled={acting() || !newTemplateName().trim()}
+                >
+                  {acting() ? "Creating..." : "Create"}
+                </button>
+                <button
+                  class="btn-ghost"
+                  onClick={() => { setShowNewTemplate(false); setNewTemplateName(""); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </Show>
+
+            <Show when={loadingTemplate()}>
+              <Spinner message="Loading template..." />
+            </Show>
+
+            <Show when={selectedTemplate()}>
+              <textarea
+                class="template-editor"
+                value={templateContent()}
+                onInput={(e) => setTemplateContent(e.currentTarget.value)}
+                rows={16}
+              />
+              <div class="form-actions">
+                <button
+                  class="btn-primary"
+                  onClick={handleSaveTemplate}
+                  disabled={acting() || !templateContent().trim()}
+                >
+                  {acting() ? "Saving..." : "Save Template"}
+                </button>
+              </div>
+            </Show>
+          </div>
+        </div>
+      </Show>
+
+      {/* ── Profiles Tab ───────────────────────────────────────── */}
+      <Show when={tab() === "profiles"}>
+        <div class="tab-content">
+          <div class="profiles-header">
+            <button class="btn-ghost" onClick={() => refetchProfiles()} disabled={profiles.loading}>
+              Refresh
+            </button>
+          </div>
+
+          <Show when={profiles.loading}>
+            <Spinner message="Loading profiles..." />
+          </Show>
+
+          <Show when={!profiles.loading && (profiles() ?? []).length === 0}>
+            <p class="text-muted">No VPN profiles found.</p>
+          </Show>
+
+          <Show when={(profiles() ?? []).length > 0}>
+            <div class="profile-table-wrap">
+              <table class="profile-table">
+                <thead>
+                  <tr>
+                    <th>CN</th>
+                    <th>Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <For each={profiles()}>
+                    {(profile) => (
+                      <tr
+                        class={`profile-row ${selectedProfile()?.cn === profile.cn ? "profile-row-selected" : ""}`}
+                        onClick={() => setSelectedProfile(profile)}
+                      >
+                        <td>{profile.cn}</td>
+                        <td class="mono">{formatDate(profile.created_date)}</td>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              </table>
+            </div>
+          </Show>
+
+          <Show when={selectedProfile()}>
+            <div class="send-section">
+              <div class="form-group">
+                <label class="form-label">Destination vault</label>
+                <VaultPicker value={destVault()} onChange={setDestVault} />
+              </div>
+              <div class="form-actions">
+                <button
+                  class="btn-primary"
+                  onClick={handleSendToVault}
+                  disabled={acting() || !destVault().trim()}
+                >
+                  {acting() ? "Sending..." : "Send to Vault"}
+                </button>
+              </div>
+            </div>
+          </Show>
+        </div>
+      </Show>
+
+      {/* ── Feedback ───────────────────────────────────────────── */}
+      <Show when={error()}>
+        <p class="page-error">{error()}</p>
+      </Show>
+      <Show when={success()}>
+        <p class="page-success">{success()}</p>
+      </Show>
+
+      <style>{`
+        .page-openvpn {
+          padding: 32px;
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          box-sizing: border-box;
+        }
+
+        .page-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 16px;
+          flex-shrink: 0;
+        }
+
+        .page-header h2 {
+          margin: 0;
+        }
+
+        .page-error {
+          color: var(--error);
+          font-size: 0.875rem;
+          padding: 8px 12px;
+          background: rgba(255, 69, 58, 0.1);
+          border-radius: 6px;
+          margin-top: 12px;
+        }
+
+        .page-success {
+          color: var(--success);
+          font-size: 0.875rem;
+          padding: 8px 12px;
+          background: rgba(34, 197, 94, 0.1);
+          border-radius: 6px;
+          margin-top: 12px;
+        }
+
+        .tab-content {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+          flex: 1;
+          min-height: 0;
+        }
+
+        .form-group {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .form-label {
+          font-size: 0.8125rem;
+          font-weight: 500;
+          color: var(--text-secondary);
+        }
+
+        .form-select {
+          padding: 8px 12px;
+          background: var(--bg-surface);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          color: var(--text-primary);
+          font-size: 0.875rem;
+          max-width: 400px;
+        }
+
+        .form-actions {
+          display: flex;
+          gap: 12px;
+          margin-top: 4px;
+        }
+
+        .generated-profile-section {
+          border-top: 1px solid var(--border);
+          padding-top: 16px;
+          max-width: 480px;
+        }
+
+        /* ── Server tab ─────────────────────────── */
+        .server-params {
+          margin-bottom: 16px;
+        }
+
+        .params-grid {
+          display: grid;
+          gap: 6px;
+        }
+
+        .server-actions {
+          display: flex;
+          gap: 8px;
+          margin-top: 12px;
+        }
+
+        .template-section {
+          border-top: 1px solid var(--border);
+          padding-top: 16px;
+        }
+
+        .template-section h3 {
+          margin: 0 0 12px 0;
+          font-size: 1rem;
+        }
+
+        .template-header {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          margin-bottom: 12px;
+        }
+
+        .template-header .form-select {
+          flex: 1;
+        }
+
+        .new-template-row {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          margin-bottom: 12px;
+        }
+
+        .new-template-row input {
+          flex: 1;
+          max-width: 300px;
+        }
+
+        .template-editor {
+          width: 100%;
+          min-height: 250px;
+          padding: 12px;
+          background: var(--bg-surface);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          color: var(--text-primary);
+          font-family: "JetBrains Mono", monospace;
+          font-size: 0.8125rem;
+          line-height: 1.5;
+          resize: vertical;
+          box-sizing: border-box;
+        }
+
+        /* ── Profiles tab ───────────────────────── */
+        .profiles-header {
+          display: flex;
+          justify-content: flex-end;
+        }
+
+        .profile-table-wrap {
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          overflow: auto;
+          max-height: 280px;
+        }
+
+        .profile-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 0.875rem;
+        }
+
+        .profile-table th {
+          text-align: left;
+          padding: 10px 14px;
+          font-size: 0.75rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: var(--text-secondary);
+          background: var(--bg-elevated);
+          border-bottom: 1px solid var(--border);
+          position: sticky;
+          top: 0;
+          z-index: 1;
+        }
+
+        .profile-table td {
+          padding: 10px 14px;
+          border-bottom: 1px solid var(--border);
+          color: var(--text-primary);
+        }
+
+        .profile-row {
+          cursor: pointer;
+          transition: background 0.1s;
+        }
+
+        .profile-row:hover {
+          background: var(--bg-elevated);
+        }
+
+        .profile-row-selected {
+          background: var(--accent-glow) !important;
+        }
+
+        .profile-row:last-child td {
+          border-bottom: none;
+        }
+
+        .send-section {
+          margin-top: 16px;
+          max-width: 400px;
+        }
+
+        /* ── Shared ─────────────────────────────── */
+        .detail-row {
+          display: flex;
+          gap: 16px;
+          padding: 6px 12px;
+          border-radius: 6px;
+        }
+
+        .detail-row:nth-child(odd) {
+          background: var(--bg-elevated);
+        }
+
+        .detail-label {
+          min-width: 120px;
+          font-size: 0.8125rem;
+          font-weight: 500;
+          color: var(--text-secondary);
+          flex-shrink: 0;
+        }
+
+        .detail-value {
+          font-size: 0.875rem;
+          color: var(--text-primary);
+          word-break: break-all;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function Row(props: {
+  label: string;
+  value: string | null | undefined;
+  mono?: boolean;
+}) {
+  return (
+    <div class="detail-row">
+      <span class="detail-label">{props.label}</span>
+      <span class={`detail-value ${props.mono ? "mono" : ""}`}>
+        {props.value ?? "\u2014"}
+      </span>
+    </div>
+  );
+}

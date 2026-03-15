@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicekid1/tauri-v2-json-schema/refs/heads/main/capabilities.json",
+  "identifier": "default",
+  "description": "Default capability set for OPCA",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "shell:allow-open"
+  ]
+}

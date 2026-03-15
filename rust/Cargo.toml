@@ -1,0 +1,6 @@
+[workspace]
+members = ["crates/opca-core", "crates/opca-tauri"]
+resolver = "2"
+
+[workspace.package]
+version = "0.99.8"
