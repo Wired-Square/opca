@@ -316,7 +316,13 @@ class CertificateAuthorityDB:
         schema_version = self.get_config_attributes(attrs=("schema_version",))["schema_version"]
 
         info: Dict[str, Any] = {"migrated": False, "from": schema_version, "to": self.default_schema_version, "steps": []}
-        if schema_version >= self.default_schema_version:
+        if schema_version > self.default_schema_version:
+            raise CADatabaseError(
+                f"Database schema version {schema_version} is newer than the "
+                f"maximum supported version ({self.default_schema_version}). "
+                f"Please upgrade to the Rust version of opca."
+            )
+        if schema_version == self.default_schema_version:
             return info
 
         cursor = self.conn.cursor()

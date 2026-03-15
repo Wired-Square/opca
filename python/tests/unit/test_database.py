@@ -622,6 +622,16 @@ class TestSchemaMigration:
         config = db2.get_config_attributes(attrs=("schema_version",))
         assert config["schema_version"] == 7
 
+    def test_future_schema_version_raises_error(self):
+        """Should raise CADatabaseError when database schema is newer than supported."""
+        db = CertificateAuthorityDB({"next_serial": 1})
+        db.conn.execute("UPDATE config SET schema_version = 99 WHERE id = 1")
+        db.conn.commit()
+        future_sql = "\n".join(db.conn.iterdump())
+
+        with pytest.raises(CADatabaseError, match="newer than the maximum supported version"):
+            CertificateAuthorityDB(data=future_sql)
+
 
 class TestExternalCertificateOperations:
     """Tests for external certificate CRUD operations."""

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.99.7] - 2026-03-15
+
+### Added
+
+- Schema version gate: the Python implementation now refuses to load a database with a schema version newer than it supports (v7), preventing data corruption when the Rust rewrite evolves the schema
+
 ## [Unreleased]
 
 ### Added
