@@ -1,7 +1,9 @@
-import { For, createSignal, onMount } from "solid-js";
+import { For, Show, createSignal, onMount } from "solid-js";
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import { getVersion } from "@tauri-apps/api/app";
+import { open } from "@tauri-apps/plugin-shell";
 import { appState, setAppState, hasCA } from "../../stores/app";
+import { availableUpdate, fetchUpdate } from "../../stores/update";
 
 interface NavItem {
   label: string;
@@ -34,6 +36,7 @@ export default function Sidebar() {
     } catch {
       // Ignore — version display is non-critical
     }
+    fetchUpdate();
   });
 
   function handleLogout() {
@@ -58,6 +61,18 @@ export default function Sidebar() {
           <span class="brand-version">v{version()}</span>
         </div>
         <span class="brand-byline">by Wired Square</span>
+        <Show when={availableUpdate()}>
+          {(update) => (
+            <button
+              class="update-badge"
+              onClick={() => open(update().url)}
+              title={`Update available: ${update().version}`}
+            >
+              <span class="update-icon" innerHTML={updateIcon} />
+              Update available
+            </button>
+          )}
+        </Show>
       </div>
       <nav class="sidebar-nav">
         <For each={navItems}>
@@ -233,10 +248,55 @@ export default function Sidebar() {
           color: var(--error);
           background: rgba(255, 69, 58, 0.08);
         }
+
+        .update-badge {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-top: 10px;
+          padding: 6px 10px;
+          background: rgba(37, 99, 235, 0.12);
+          color: #3b82f6;
+          border: 1px solid rgba(37, 99, 235, 0.25);
+          border-radius: 6px;
+          font-family: "DM Sans", sans-serif;
+          font-size: 0.75rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: background 0.15s, border-color 0.15s;
+          width: 100%;
+          box-sizing: border-box;
+        }
+
+        .update-badge:hover {
+          background: rgba(37, 99, 235, 0.2);
+          border-color: rgba(37, 99, 235, 0.4);
+        }
+
+        .update-icon {
+          width: 14px;
+          height: 14px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+
+        .update-icon svg {
+          width: 14px;
+          height: 14px;
+          stroke: currentColor;
+          fill: none;
+          stroke-width: 2;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+        }
       `}</style>
     </aside>
   );
 }
+
+const updateIcon = `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="8"/><polyline points="8 12 12 8 16 12"/></svg>`;
 
 // SVG icons (inline, Lucide-style)
 const navIcons: Record<string, string> = {

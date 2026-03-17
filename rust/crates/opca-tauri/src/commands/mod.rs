@@ -10,4 +10,5 @@ pub mod dto;
 pub mod files;
 pub mod lock;
 pub mod openvpn;
+pub mod update;
 pub mod vault;

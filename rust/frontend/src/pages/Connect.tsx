@@ -1,8 +1,10 @@
 import { createSignal, Show, For, onMount } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-shell";
 import { setAppState, type VaultState } from "../stores/app";
 import { themeMode, toggleTheme } from "../stores/theme";
+import { availableUpdate, fetchUpdate } from "../stores/update";
 
 interface ConnectionInfo {
   connected: boolean;
@@ -53,6 +55,8 @@ function removeLogin(vault: string, account: string | null): SavedLogin[] {
   return logins;
 }
 
+const updateIcon = `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="8"/><polyline points="8 12 12 8 16 12"/></svg>`;
+
 export default function Connect() {
   const navigate = useNavigate();
   const [vault, setVault] = createSignal("");
@@ -71,6 +75,7 @@ export default function Connect() {
     } catch {
       setOpCli({ found: false, path: null });
     }
+    fetchUpdate();
   });
 
   function selectLogin(login: SavedLogin) {
@@ -220,6 +225,19 @@ export default function Connect() {
                 {status().found ? `op CLI found: ${status().path}` : "op CLI not found on PATH"}
               </span>
             </div>
+          )}
+        </Show>
+
+        <Show when={availableUpdate()}>
+          {(update) => (
+            <button
+              class="connect-update-badge"
+              onClick={() => open(update().url)}
+              title={`Update available: ${update().version}`}
+            >
+              <span class="connect-update-icon" innerHTML={updateIcon} />
+              Update available: {update().version}
+            </button>
           )}
         </Show>
       </div>
@@ -474,6 +492,50 @@ export default function Connect() {
 
         .op-cli-text {
           color: var(--text-tertiary);
+        }
+
+        .connect-update-badge {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          margin-top: 12px;
+          padding: 8px 14px;
+          background: rgba(37, 99, 235, 0.12);
+          color: #3b82f6;
+          border: 1px solid rgba(37, 99, 235, 0.25);
+          border-radius: 8px;
+          font-family: "DM Sans", sans-serif;
+          font-size: 0.8125rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: background 0.15s, border-color 0.15s;
+          width: 100%;
+          box-sizing: border-box;
+        }
+
+        .connect-update-badge:hover {
+          background: rgba(37, 99, 235, 0.2);
+          border-color: rgba(37, 99, 235, 0.4);
+        }
+
+        .connect-update-icon {
+          width: 16px;
+          height: 16px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+
+        .connect-update-icon svg {
+          width: 16px;
+          height: 16px;
+          stroke: currentColor;
+          fill: none;
+          stroke-width: 2;
+          stroke-linecap: round;
+          stroke-linejoin: round;
         }
       `}</style>
     </div>

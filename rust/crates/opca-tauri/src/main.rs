@@ -113,6 +113,7 @@ fn main() {
             commands::vault::vault_restore,
             commands::vault::vault_info,
             commands::vault::vault_default_filename,
+            commands::update::check_for_updates,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run opCA desktop application");

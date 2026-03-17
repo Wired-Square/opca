@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Update notification: checks GitHub releases on startup and displays a badge in the sidebar and login view when a newer version is available
+
 ### Fixed
 
 - macOS production build performance: reduced `op` CLI process spawns per operation by eliminating redundant `item_exists` probes, fingerprint re-downloads, and `StoreAction::Auto` lookups
