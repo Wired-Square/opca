@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{Manager, State};
 
 use opca_core::services::cert::{CertBundleConfig, CertificateBundle, CertType};
 use opca_core::services::database::{CertLookup, CertRecord};
@@ -76,58 +76,75 @@ pub async fn get_cert_info(
 
 /// Slow path: fetch the certificate bundle from 1Password, backfill any
 /// missing metadata into the database, and return the enriched detail + PEM.
+///
+/// The 1Password database persist is deferred to a background task so the
+/// user sees the result as soon as the cert bundle is retrieved — the
+/// expensive `op document edit` no longer blocks the UI.
 #[tauri::command]
 pub async fn backfill_cert(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     serial: String,
 ) -> Result<CertDetail, String> {
-    let mut conn = state.ensure_ca()?;
-    let ca = conn.ca.as_mut().ok_or("CA not available")?;
+    let (result, needs_persist) = {
+        let mut conn = state.ensure_ca()?;
+        let ca = conn.ca.as_mut().ok_or("CA not available")?;
 
-    let db = ca.ca_database.as_ref()
-        .ok_or("Database not loaded")?;
+        let db = ca.ca_database.as_ref()
+            .ok_or("Database not loaded")?;
 
-    let mut record = db.query_cert(&CertLookup::Serial(serial), false)
-        .map_err(|e| e.to_string())?
-        .ok_or("Certificate not found")?;
+        let mut record = db.query_cert(&CertLookup::Serial(serial), false)
+            .map_err(|e| e.to_string())?
+            .ok_or("Certificate not found")?;
 
-    // Retrieve cert bundle from 1Password (for PEM and/or backfill)
-    let title = record.title.as_deref().unwrap_or(&record.serial);
-    let bundle = ca.retrieve_certbundle(title)
-        .ok()
-        .flatten();
+        // Retrieve cert bundle from 1Password (for PEM and/or backfill)
+        let title = record.title.as_deref().unwrap_or(&record.serial);
+        let bundle = ca.retrieve_certbundle(title)
+            .ok()
+            .flatten();
 
-    let cert_pem = bundle.as_ref()
-        .and_then(|b| b.certificate_pem().ok());
+        let cert_pem = bundle.as_ref()
+            .and_then(|b| b.certificate_pem().ok());
 
-    // Determine if metadata is missing — if so backfill from the bundle
-    let needs_backfill = record.cert_type.is_none()
-        || record.key_type.is_none()
-        || record.subject.is_none()
-        || record.not_before.is_none()
-        || record.san.is_none()
-        || record.issuer.is_none();
+        // Determine if metadata is missing — if so backfill from the bundle
+        let needs_backfill = record.cert_type.is_none()
+            || record.key_type.is_none()
+            || record.subject.is_none()
+            || record.not_before.is_none()
+            || record.san.is_none()
+            || record.issuer.is_none();
 
-    if needs_backfill {
-        if let Some(ref b) = bundle {
-            backfill_record(&mut record, b);
+        let mut did_backfill = false;
+        if needs_backfill {
+            if let Some(ref b) = bundle {
+                backfill_record(&mut record, b);
 
-            // Persist to local database and mark dirty for 1Password sync
-            if let Some(ref mut db) = ca.ca_database {
-                let _ = db.update_cert(&record);
-            }
-
-            // Store updated database to 1Password
-            match ca.store_ca_database() {
-                Ok(_) => state.log_ok("store_database", Some(format!(
-                    "Backfill metadata for '{}'", record.cn.as_deref().unwrap_or(&record.serial)
-                ))),
-                Err(e) => state.log_err("store_database", Some(e.to_string())),
+                // Persist to local (in-memory) database
+                if let Some(ref mut db) = ca.ca_database {
+                    let _ = db.update_cert(&record);
+                }
+                did_backfill = true;
             }
         }
+
+        (record_to_detail(&record, cert_pem), did_backfill)
+    }; // conn lock dropped — user gets result immediately
+
+    // Persist updated database to 1Password in the background so the UI
+    // is not blocked by the extra `op document edit` round-trip.
+    if needs_persist {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state: State<'_, AppState> = app.state();
+            let mut conn = state.conn.lock().unwrap();
+            if let Some(ca) = conn.ca.as_mut() {
+                if let Err(e) = ca.store_ca_database() {
+                    state.log_err("store_database", Some(e.to_string()));
+                }
+            }
+        });
     }
 
-    Ok(record_to_detail(&record, cert_pem))
+    Ok(result)
 }
 
 fn record_to_detail(record: &CertRecord, cert_pem: Option<String>) -> CertDetail {

@@ -7,11 +7,15 @@
 
 use std::collections::HashMap;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
 use crate::constants::OP_BIN;
 use crate::error::OpcaError;
+
+/// Maximum time (in seconds) to wait for an `op` CLI command to complete.
+const OP_TIMEOUT_SECS: u64 = 30;
 
 // ------------------------------------------------------------------
 // CommandRunner abstraction
@@ -90,6 +94,26 @@ impl CommandRunner for ShellRunner {
             use std::io::Write;
             if let Some(ref mut stdin) = child.stdin {
                 stdin.write_all(text.as_bytes()).ok();
+            }
+        }
+
+        let timeout = Duration::from_secs(OP_TIMEOUT_SECS);
+        let start = Instant::now();
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(_status)) => break,
+                Ok(None) => {
+                    if start.elapsed() > timeout {
+                        let _ = child.kill();
+                        return Err(OpcaError::Io(format!(
+                            "op command timed out after {}s",
+                            OP_TIMEOUT_SECS
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => return Err(OpcaError::from(e)),
             }
         }
 

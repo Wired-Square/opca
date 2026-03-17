@@ -134,12 +134,13 @@ impl<R: CommandRunner> CertificateAuthority<R> {
     pub fn retrieve(op: Op<R>) -> Result<Self, OpcaError> {
         let op_config = DEFAULT_OP_CONF;
 
-        if !op.item_exists(op_config.ca_title) {
-            return Err(OpcaError::CaNotFound);
-        }
-
-        // Download database
-        let ca_database_sql = op.get_document(op_config.ca_database_title)?;
+        // Download database — also proves the CA exists, so we skip a
+        // separate `item_exists` probe (one fewer `op` process spawn).
+        let ca_database_sql = op.get_document(op_config.ca_database_title)
+            .map_err(|e| match e {
+                OpcaError::ItemNotFound(_) => OpcaError::CaNotFound,
+                other => other,
+            })?;
 
         let fingerprint = sha256_hex(ca_database_sql.as_bytes());
         let (mut db, _migration) =
@@ -1066,7 +1067,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
 
     /// Store the CA database in 1Password.
     pub fn store_ca_database(&mut self) -> Result<(), OpcaError> {
-        self.verify_db_fingerprint()?;
+        self.update_db_fingerprint()?;
 
         let db = self.ca_database.as_ref()
             .ok_or_else(|| OpcaError::Other("CA not initialised".into()))?;
@@ -1074,11 +1075,13 @@ impl<R: CommandRunner> CertificateAuthority<R> {
         let sql_bytes = db.export_database()?;
         let sql_text = String::from_utf8_lossy(&sql_bytes).to_string();
 
+        // Use Edit — we know the document exists because we loaded from it.
+        // This avoids a redundant `item_exists` probe (one fewer op spawn).
         self.op.store_document(
             self.op_config.ca_database_title,
             self.op_config.ca_database_filename,
             &sql_text,
-            StoreAction::Auto,
+            StoreAction::Edit,
             None,
         )?;
 
@@ -1091,39 +1094,17 @@ impl<R: CommandRunner> CertificateAuthority<R> {
         Ok(())
     }
 
-    /// Verify the remote database hasn't been modified since download.
-    fn verify_db_fingerprint(&mut self) -> Result<(), OpcaError> {
-        let db = match self.ca_database.as_ref() {
-            Some(db) => db,
-            None => return Ok(()),
-        };
-
-        let stored_fp = match &db.download_fingerprint {
-            Some(fp) => fp.clone(),
-            None => return Ok(()),
-        };
-
-        let current_doc = match self.op.get_document(self.op_config.ca_database_title) {
-            Ok(doc) => doc,
-            Err(_) => return Ok(()), // cannot verify — proceed optimistically
-        };
-
-        let current_fp = sha256_hex(current_doc.as_bytes());
-
-        if current_fp != stored_fp {
-            return Err(OpcaError::Database(
-                "The vault database has been modified by another user since \
-                 it was last downloaded. Reconnect to reload the latest \
-                 database and retry your operation."
-                    .to_string(),
-            ));
+    /// Update the stored fingerprint to reflect what we are about to upload.
+    ///
+    /// Concurrent-modification detection is handled by the vault-level lock
+    /// (`VaultLock`), so we no longer re-download the full database just to
+    /// compare hashes — that extra `op` process spawn was the single biggest
+    /// contributor to latency on macOS production builds.
+    fn update_db_fingerprint(&mut self) -> Result<(), OpcaError> {
+        if let Some(ref mut db) = self.ca_database {
+            let export = db.export_database()?;
+            db.download_fingerprint = Some(sha256_hex(&export));
         }
-
-        // Update fingerprint to match what we are about to upload
-        let db = self.ca_database.as_mut().unwrap();
-        let export = db.export_database()?;
-        db.download_fingerprint = Some(sha256_hex(&export));
-
         Ok(())
     }
 

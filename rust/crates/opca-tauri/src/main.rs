@@ -5,6 +5,21 @@ mod state;
 
 use state::AppState;
 
+/// Spawn a background `op --version` so that macOS caches the AMFI / code-
+/// signature verification for the `op` binary.  Subsequent spawns in the same
+/// session then skip the expensive OCSP check, cutting several seconds off
+/// every real `op` call.
+#[cfg(target_os = "macos")]
+fn warmup_op_cli() {
+    std::thread::spawn(|| {
+        let _ = std::process::Command::new("op")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    });
+}
+
 /// Extend `PATH` so that bundled macOS `.app` builds (which inherit a minimal
 /// PATH from launchd) can find CLI tools like `op` installed via Homebrew or
 /// common package managers.
@@ -33,6 +48,8 @@ fn extend_path() {
 fn main() {
     #[cfg(target_os = "macos")]
     extend_path();
+    #[cfg(target_os = "macos")]
+    warmup_op_cli();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

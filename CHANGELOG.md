@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- macOS production build performance: reduced `op` CLI process spawns per operation by eliminating redundant `item_exists` probes, fingerprint re-downloads, and `StoreAction::Auto` lookups
+- Certificate backfill now returns detail to the UI immediately and persists the database to 1Password in the background
+- Added AMFI/OCSP cache warmup at startup (`op --version`) so first real `op` call is not penalised by macOS code-signature verification
+- Added 30-second timeout on `op` CLI calls to prevent indefinite hangs
+- Added macOS hardened-runtime entitlements (`disable-library-validation`, `automation.apple-events`, `inherit`) for reliable child-process IPC in signed builds
+
 ## [0.99.8] - 2026-03-15
 
 ### Added

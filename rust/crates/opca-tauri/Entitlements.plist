@@ -4,5 +4,16 @@
 <dict>
     <key>com.apple.security.app-sandbox</key>
     <false/>
+    <!-- Allow spawning child processes (op CLI) that load non-team-signed
+         libraries, e.g. the 1Password agent IPC helper. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- Allow Apple Events so that the 1Password CLI can trigger the
+         biometric / system authentication dialog. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    <!-- Child processes spawned by this app inherit these entitlements. -->
+    <key>com.apple.security.inherit</key>
+    <true/>
 </dict>
 </plist>
