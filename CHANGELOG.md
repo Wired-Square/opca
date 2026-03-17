@@ -29,7 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added AMFI/OCSP cache warmup at startup (`op --version`) so first real `op` call is not penalised by macOS code-signature verification
 - Added 30-second timeout on `op` CLI calls to prevent indefinite hangs
 - Added macOS hardened-runtime entitlements (`disable-library-validation`, `automation.apple-events`, `inherit`) for reliable child-process IPC in signed builds
-- Store connection test now fetches AWS credentials once and reuses them across all S3 stores, and spawns `op plugin run` directly with a 5-minute timeout to handle slow AMFI verification in hardened-runtime builds
+- S3 credential fetching rewritten to read the 1Password AWS plugin config (`~/.config/op/plugins/aws.json`) and fetch credentials directly via `op item get`, replacing `op plugin run` which could hang in non-interactive/GUI contexts
+- Store connection test now fetches AWS credentials once and reuses them across all S3 stores
+- Subprocess stdin set to null when no input is provided, preventing potential hangs from inherited stdin
 
 ## [0.99.8] - 2026-03-15
 

@@ -1391,7 +1391,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
 
     /// Upload content to a storage URI.
     pub fn upload_content(&self, content: &[u8], store_uri: &str) -> Result<(), OpcaError> {
-        let backend = storage::storage_from_uri(store_uri, self.op.runner())?;
+        let backend = storage::storage_from_uri(store_uri, self.op.runner(), self.op.account())?;
         backend.upload(content, store_uri)
     }
 
@@ -1476,7 +1476,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
         });
 
         let aws_creds = if needs_s3 {
-            match storage::get_aws_credentials(self.op.runner()) {
+            match storage::get_aws_credentials(self.op.runner(), self.op.account()) {
                 Ok(creds) => Some(creds),
                 Err(e) => {
                     error!("[ca] failed to retrieve AWS credentials: {e}");

@@ -14,7 +14,9 @@
     "release:patch": "node scripts/release.js patch",
     "release:minor": "node scripts/release.js minor",
     "release:major": "node scripts/release.js major",
-    "release:rebuild": "node scripts/release.js rebuild"
+    "release:rebuild": "node scripts/release.js rebuild",
+    "test": "cargo test -p opca-core",
+    "test:e2e": "cargo test -p opca-core --test e2e"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1"

@@ -78,6 +78,8 @@ impl CommandRunner for ShellRunner {
 
         if input.is_some() {
             cmd.stdin(std::process::Stdio::piped());
+        } else {
+            cmd.stdin(std::process::Stdio::null());
         }
 
         cmd.stdout(std::process::Stdio::piped());
@@ -240,6 +242,11 @@ impl<R: CommandRunner> Op<R> {
     /// Access the underlying command runner.
     pub fn runner(&self) -> &R {
         &self.runner
+    }
+
+    /// The 1Password account shorthand (if set).
+    pub fn account(&self) -> Option<&str> {
+        self.account.as_deref()
     }
 
     // ------------------------------------------------------------------
