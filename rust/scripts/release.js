@@ -160,9 +160,11 @@ function extractVersionChangelog(version) {
 
 // Version files to stage for git commit
 const VERSION_FILES = [
+  'rust/Cargo.toml',
   'rust/package.json',
   'rust/frontend/package.json',
   'rust/crates/opca-core/Cargo.toml',
+  'rust/crates/opca-cli/Cargo.toml',
   'rust/crates/opca-tauri/Cargo.toml',
   'rust/crates/opca-tauri/tauri.conf.json',
   'rust/Cargo.lock',
