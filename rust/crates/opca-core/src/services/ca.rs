@@ -1075,13 +1075,13 @@ impl<R: CommandRunner> CertificateAuthority<R> {
         let sql_bytes = db.export_database()?;
         let sql_text = String::from_utf8_lossy(&sql_bytes).to_string();
 
-        // Use Edit — we know the document exists because we loaded from it.
-        // This avoids a redundant `item_exists` probe (one fewer op spawn).
+        // Use Auto — during init/rebuild the document doesn't exist yet,
+        // while during normal operation it does. Auto checks existence first.
         self.op.store_document(
             self.op_config.ca_database_title,
             self.op_config.ca_database_filename,
             &sql_text,
-            StoreAction::Edit,
+            StoreAction::Auto,
             None,
         )?;
 
@@ -1307,7 +1307,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
 /// Convert a `CaConfig` (database model) into a `CertBundleConfig` (cert model).
 fn ca_config_to_bundle(config: &CaConfig) -> CertBundleConfig {
     CertBundleConfig {
-        cn: None, // Must be set separately for non-CA certs
+        cn: config.cn.clone(),
         key_size: None, // Uses default
         org: config.org.clone(),
         ou: config.ou.clone(),
@@ -1317,7 +1317,7 @@ fn ca_config_to_bundle(config: &CaConfig) -> CertBundleConfig {
         country: config.country.clone(),
         alt_dns_names: None,
         next_serial: config.next_serial,
-        ca_days: config.days,
+        ca_days: config.ca_days.or(config.days),
     }
 }
 

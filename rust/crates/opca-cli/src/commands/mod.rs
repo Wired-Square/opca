@@ -1,0 +1,47 @@
+pub mod ca;
+pub mod cert;
+pub mod crl;
+pub mod csr;
+pub mod database;
+pub mod dkim;
+pub mod openvpn;
+pub mod vault;
+
+use opca_core::error::OpcaError;
+use opca_core::op::ShellRunner;
+
+use crate::app::AppContext;
+use crate::{Cli, Commands};
+
+/// Dispatch the parsed CLI to the appropriate command handler.
+pub fn dispatch(cli: Cli) -> Result<(), OpcaError> {
+    let mut app = AppContext::<ShellRunner>::new(&cli.vault, cli.account)?;
+
+    // Determine if we need eager CA loading.
+    // "Init-like" commands skip CA retrieval because the CA may not exist yet.
+    let needs_ca = !matches!(
+        &cli.command,
+        Commands::Ca(crate::CaArgs {
+            action: crate::CaAction::Init { .. } | crate::CaAction::Import { .. },
+        }) | Commands::Csr(_)
+            | Commands::Database(crate::DatabaseArgs {
+                action: crate::DatabaseAction::Rebuild { .. },
+            })
+            | Commands::Vault(_)
+    );
+
+    if needs_ca {
+        app.ensure_ca()?;
+    }
+
+    match cli.command {
+        Commands::Ca(args) => ca::dispatch(args, &mut app),
+        Commands::Cert(args) => cert::dispatch(args, &mut app),
+        Commands::Crl(args) => crl::dispatch(args, &mut app),
+        Commands::Csr(args) => csr::dispatch(args, &mut app),
+        Commands::Database(args) => database::dispatch(args, &mut app),
+        Commands::Dkim(args) => dkim::dispatch(args, &mut app),
+        Commands::Openvpn(args) => openvpn::dispatch(args, &mut app),
+        Commands::Vault(args) => vault::dispatch(args, &mut app),
+    }
+}

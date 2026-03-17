@@ -9,10 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Rust CLI (`opca-cli` crate): complete command-line interface replacing the deprecated Python CLI, with all 8 command groups (ca, cert, crl, csr, database, dkim, openvpn, vault) and 35 subcommands using clap v4
 - Update notification: checks GitHub releases on startup and displays a badge in the sidebar and login view when a newer version is available
 
 ### Fixed
 
+- CA initialisation now correctly passes Common Name and CA certificate validity (`--ca-days`) through `CaConfig` to the certificate bundle, fixing `ca init` failures
+- `store_ca_database` uses `StoreAction::Auto` instead of hardcoded `Edit`, fixing document creation during `ca init` and `database rebuild`
+- `op` CLI stdin pipe now closed after writing, preventing 30-second timeouts on `document create` operations
 - macOS production build performance: reduced `op` CLI process spawns per operation by eliminating redundant `item_exists` probes, fingerprint re-downloads, and `StoreAction::Auto` lookups
 - Certificate backfill now returns detail to the UI immediately and persists the database to 1Password in the background
 - Added AMFI/OCSP cache warmup at startup (`op --version`) so first real `op` call is not penalised by macOS code-signature verification

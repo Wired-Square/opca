@@ -91,6 +91,12 @@ pub struct CsrRecord {
 /// here, with conversion at the boundary (matching the Python behaviour).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CaConfig {
+    /// CA Common Name — used only during init, not persisted to the database.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cn: Option<String>,
+    /// CA certificate validity in days — used only during init, not persisted.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ca_days: Option<i64>,
     pub next_serial: Option<i64>,
     pub next_crl_serial: Option<i64>,
     pub org: Option<String>,

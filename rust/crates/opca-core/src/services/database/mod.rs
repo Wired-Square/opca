@@ -212,6 +212,8 @@ impl CertificateAuthorityDB {
             let next_crl_serial: Option<String> = row.get(1)?;
 
             Ok(CaConfig {
+                cn: None,
+                ca_days: None,
                 next_serial: next_serial
                     .as_deref()
                     .and_then(|s| s.trim().parse::<i64>().ok()),

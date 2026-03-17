@@ -92,8 +92,9 @@ impl CommandRunner for ShellRunner {
 
         if let Some(text) = input {
             use std::io::Write;
-            if let Some(ref mut stdin) = child.stdin {
+            if let Some(mut stdin) = child.stdin.take() {
                 stdin.write_all(text.as_bytes()).ok();
+                drop(stdin); // Close stdin so `op` sees EOF
             }
         }
 

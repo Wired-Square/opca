@@ -164,6 +164,8 @@ pub(crate) fn ca_config_to_dto(config: &CaConfig) -> CaConfigDto {
 
 fn dto_to_ca_config(dto: &CaConfigDto) -> CaConfig {
     CaConfig {
+        cn: None,
+        ca_days: None,
         next_serial: dto.next_serial,
         next_crl_serial: dto.next_crl_serial,
         org: dto.org.clone(),

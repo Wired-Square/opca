@@ -1,0 +1,20 @@
+[package]
+name = "opca-cli"
+version.workspace = true
+edition = "2021"
+description = "opCA command-line interface"
+
+[[bin]]
+name = "opca"
+path = "src/main.rs"
+
+[dependencies]
+opca-core = { path = "../opca-core" }
+clap = { version = "4", features = ["derive"] }
+rpassword = "5"
+openssl = "0.10"
+base64 = "0.22"
+env_logger = "0.11"
+log = "0.4"
+serde_json = "1"
+chrono = "0.4"

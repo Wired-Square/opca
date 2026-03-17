@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/opca-core", "crates/opca-tauri"]
+members = ["crates/opca-core", "crates/opca-cli", "crates/opca-tauri"]
 resolver = "2"
 
 [workspace.package]
