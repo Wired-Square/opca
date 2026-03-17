@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- S3 credential fetching rewritten to read the 1Password AWS plugin config (`~/.config/op/plugins/aws.json`) and fetch credentials directly via `op item get`, replacing `op plugin run` which could hang in non-interactive/GUI contexts
+- Pass 1Password account through to storage backend calls
+
+### Fixed
+
+- Subprocess stdin set to null when no input is provided, preventing potential hangs from inherited stdin
+
+### Added
+
+- `test` and `test:e2e` npm scripts in `rust/package.json`
+
 ## [0.99.9] - 2026-03-17
 
 ### Added
@@ -29,9 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added AMFI/OCSP cache warmup at startup (`op --version`) so first real `op` call is not penalised by macOS code-signature verification
 - Added 30-second timeout on `op` CLI calls to prevent indefinite hangs
 - Added macOS hardened-runtime entitlements (`disable-library-validation`, `automation.apple-events`, `inherit`) for reliable child-process IPC in signed builds
-- S3 credential fetching rewritten to read the 1Password AWS plugin config (`~/.config/op/plugins/aws.json`) and fetch credentials directly via `op item get`, replacing `op plugin run` which could hang in non-interactive/GUI contexts
-- Store connection test now fetches AWS credentials once and reuses them across all S3 stores
-- Subprocess stdin set to null when no input is provided, preventing potential hangs from inherited stdin
+- Store connection test now fetches AWS credentials once and reuses them across all S3 stores, and spawns `op plugin run` directly with a 5-minute timeout to handle slow AMFI verification in hardened-runtime builds
 
 ## [0.99.8] - 2026-03-15
 
