@@ -1,4 +1,4 @@
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use opca_core::services::cert::{CertBundleConfig, CertificateBundle, CertType};
 use opca_core::services::database::{CertLookup, CertRecord};
@@ -135,12 +135,15 @@ pub async fn backfill_cert(
     if needs_persist {
         tauri::async_runtime::spawn_blocking(move || {
             let state: State<'_, AppState> = app.state();
+            let _ = app.emit("op-status", Some("store_database"));
             let mut conn = state.conn.lock().unwrap();
             if let Some(ca) = conn.ca.as_mut() {
                 if let Err(e) = ca.store_ca_database() {
                     state.log_err("store_database", Some(e.to_string()));
                 }
             }
+            drop(conn);
+            let _ = app.emit("op-status", None::<String>);
         });
     }
 

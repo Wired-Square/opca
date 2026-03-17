@@ -1,6 +1,7 @@
-import { Show, createEffect, type ParentProps } from "solid-js";
+import { Show, createEffect, onMount, type ParentProps } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
 import { appState } from "./stores/app";
+import { initOperationListener } from "./stores/operation";
 import Sidebar from "./components/layout/Sidebar";
 import Header from "./components/layout/Header";
 
@@ -11,6 +12,10 @@ export default function App(props: ParentProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const isConnectPage = () => location.pathname === "/" || location.pathname === "";
+
+  onMount(() => {
+    initOperationListener();
+  });
 
   // Redirect based on vault state
   createEffect(() => {

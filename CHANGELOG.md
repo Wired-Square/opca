@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Rust CLI (`opca-cli` crate): complete command-line interface replacing the deprecated Python CLI, with all 8 command groups (ca, cert, crl, csr, database, dkim, openvpn, vault) and 35 subcommands using clap v4
 - Update notification: checks GitHub releases on startup and displays a badge in the sidebar and login view when a newer version is available
+- Sidebar operation status: shows the currently active op CLI operation (with spinner) at the bottom of the sidebar
 
 ### Fixed
 

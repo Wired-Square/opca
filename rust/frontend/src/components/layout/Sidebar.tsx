@@ -4,6 +4,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-shell";
 import { appState, setAppState, hasCA } from "../../stores/app";
 import { availableUpdate, fetchUpdate } from "../../stores/update";
+import { operationLabel } from "../../stores/operation";
 
 interface NavItem {
   label: string;
@@ -100,6 +101,14 @@ export default function Sidebar() {
         </For>
       </nav>
       <div class="sidebar-footer">
+        <Show when={operationLabel()}>
+          {(label) => (
+            <div class="sidebar-status">
+              <span class="sidebar-status-spinner" />
+              <span class="sidebar-status-label">{label()}</span>
+            </div>
+          )}
+        </Show>
         <button class="sidebar-link logout-btn" onClick={handleLogout}>
           <span class="sidebar-icon" innerHTML={navIcons.logout} />
           <span class="sidebar-label">Disconnect</span>
@@ -238,6 +247,37 @@ export default function Sidebar() {
         .sidebar-footer {
           padding: 12px;
           border-top: 1px solid var(--border);
+        }
+
+        .sidebar-status {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          margin-bottom: 4px;
+          font-size: 0.75rem;
+          color: var(--text-tertiary);
+          overflow: hidden;
+        }
+
+        .sidebar-status-label {
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .sidebar-status-spinner {
+          width: 12px;
+          height: 12px;
+          border: 2px solid var(--border);
+          border-top-color: var(--accent);
+          border-radius: 50%;
+          animation: sidebar-spin 0.8s linear infinite;
+          flex-shrink: 0;
+        }
+
+        @keyframes sidebar-spin {
+          to { transform: rotate(360deg); }
         }
 
         .logout-btn {
