@@ -32,3 +32,9 @@ export async function uploadCaCert(): Promise<void> {
 export async function uploadCaDatabase(): Promise<void> {
   return tauriInvoke<void>("upload_ca_database");
 }
+
+export async function resignCa(caDays: number): Promise<CaInfo> {
+  return withLock("resign_ca", () =>
+    tauriInvoke<CaInfo>("resign_ca", { caDays }),
+  );
+}

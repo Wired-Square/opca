@@ -14,8 +14,11 @@ use rusqlite::Connection;
 use crate::error::OpcaError;
 use crate::utils::datetime::{self, DateTimeFormat};
 
-/// Expiry warning window in days.
+/// Critical expiry warning window in days.
 const EXPIRY_WARNING_DAYS: i64 = 30;
+
+/// Caution expiry warning window in days (6 months).
+const EXPIRY_CAUTION_DAYS: i64 = 183;
 
 /// Valid config attribute names (matching the Python `config_attrs` tuple).
 #[allow(dead_code)]
@@ -55,10 +58,12 @@ pub struct CertificateAuthorityDB {
     // Status sets populated by `process_ca_database`
     pub certs_expired: HashSet<String>,
     pub certs_expires_soon: HashSet<String>,
+    pub certs_expires_warning: HashSet<String>,
     pub certs_revoked: HashSet<String>,
     pub certs_valid: HashSet<String>,
     pub ext_certs_expired: HashSet<String>,
     pub ext_certs_expires_soon: HashSet<String>,
+    pub ext_certs_expires_warning: HashSet<String>,
     pub ext_certs_valid: HashSet<String>,
 }
 
@@ -87,10 +92,12 @@ impl CertificateAuthorityDB {
             download_fingerprint: None,
             certs_expired: HashSet::new(),
             certs_expires_soon: HashSet::new(),
+            certs_expires_warning: HashSet::new(),
             certs_revoked: HashSet::new(),
             certs_valid: HashSet::new(),
             ext_certs_expired: HashSet::new(),
             ext_certs_expires_soon: HashSet::new(),
+            ext_certs_expires_warning: HashSet::new(),
             ext_certs_valid: HashSet::new(),
         })
     }
@@ -118,10 +125,12 @@ impl CertificateAuthorityDB {
             download_fingerprint: None,
             certs_expired: HashSet::new(),
             certs_expires_soon: HashSet::new(),
+            certs_expires_warning: HashSet::new(),
             certs_revoked: HashSet::new(),
             certs_valid: HashSet::new(),
             ext_certs_expired: HashSet::new(),
             ext_certs_expires_soon: HashSet::new(),
+            ext_certs_expires_warning: HashSet::new(),
             ext_certs_valid: HashSet::new(),
         };
 
@@ -1024,15 +1033,19 @@ impl CertificateAuthorityDB {
         let mut db_changed = false;
         self.certs_expired.clear();
         self.certs_expires_soon.clear();
+        self.certs_expires_warning.clear();
         self.certs_revoked.clear();
         self.certs_valid.clear();
         self.ext_certs_expired.clear();
         self.ext_certs_expires_soon.clear();
+        self.ext_certs_expires_warning.clear();
         self.ext_certs_valid.clear();
 
         let now = Utc::now().naive_utc();
         let warning_boundary =
             now + chrono::Duration::days(EXPIRY_WARNING_DAYS);
+        let caution_boundary =
+            now + chrono::Duration::days(EXPIRY_CAUTION_DAYS);
 
         // Process CA-issued certificates
         let certs = self.fetch_all_ca_certs()?;
@@ -1064,6 +1077,8 @@ impl CertificateAuthorityDB {
                 }
             }
 
+            let expires_warning = caution_boundary > expiry_date;
+
             if expired {
                 if cert.status.as_deref() != Some("Expired") {
                     cert_changed = true;
@@ -1080,6 +1095,9 @@ impl CertificateAuthorityDB {
                 self.certs_revoked.insert(cert.serial.clone());
             } else if expires_soon {
                 self.certs_expires_soon.insert(cert.serial.clone());
+                self.certs_expires_warning.insert(cert.serial.clone());
+            } else if expires_warning {
+                self.certs_expires_warning.insert(cert.serial.clone());
             } else {
                 self.certs_valid.insert(cert.serial.clone());
             }
@@ -1106,6 +1124,7 @@ impl CertificateAuthorityDB {
 
             let expired = now > expiry_date;
             let expires_soon = warning_boundary > expiry_date;
+            let expires_warning = caution_boundary > expiry_date;
 
             if expired {
                 if ext.status.as_deref() != Some("Expired") {
@@ -1116,6 +1135,9 @@ impl CertificateAuthorityDB {
                 self.ext_certs_expired.insert(ext.serial.clone());
             } else if expires_soon {
                 self.ext_certs_expires_soon.insert(ext.serial.clone());
+                self.ext_certs_expires_warning.insert(ext.serial.clone());
+            } else if expires_warning {
+                self.ext_certs_expires_warning.insert(ext.serial.clone());
             } else {
                 self.ext_certs_valid.insert(ext.serial.clone());
             }

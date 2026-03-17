@@ -72,9 +72,12 @@ fn handle_create<R: CommandRunner>(
                 ca_days: ca_config.days,
             };
 
-            let bundle = ca.generate_certificate_bundle(cert_type.clone(), cn, config)?;
+            let (bundle, issuance_warning) = ca.generate_certificate_bundle(cert_type.clone(), cn, config)?;
             let valid = bundle.is_valid().unwrap_or(false);
             output::print_result(&format!("Certificate '{cn}'"), valid);
+            if let Some(ref w) = issuance_warning {
+                output::warning(&w.message);
+            }
         }
         Ok(())
     })
@@ -235,8 +238,11 @@ fn handle_renew<R: CommandRunner>(
 
     with_lock(app, "cert_renew", |app| {
         let ca = app.ca.as_mut().ok_or(OpcaError::CaNotFound)?;
-        let new_pem = ca.renew_certificate_bundle(&lookup)?;
+        let (new_pem, issuance_warning) = ca.renew_certificate_bundle(&lookup)?;
         output::print_result("Certificate renewed", true);
+        if let Some(ref w) = issuance_warning {
+            output::warning(&w.message);
+        }
         print!("{new_pem}");
         Ok(())
     })

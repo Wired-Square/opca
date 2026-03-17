@@ -167,7 +167,7 @@ fn t20_cert_create_server() {
     };
 
     let title = "e2e-webserver";
-    let bundle = ca
+    let (bundle, _warning) = ca
         .generate_certificate_bundle(CertType::WebServer, title, config)
         .expect("generate webserver cert failed");
 
@@ -195,7 +195,7 @@ fn t21_cert_create_client() {
     };
 
     let title = "e2e-vpnclient";
-    let bundle = ca
+    let (bundle, _warning) = ca
         .generate_certificate_bundle(CertType::VpnClient, title, config)
         .expect("generate vpnclient cert failed");
 
@@ -235,7 +235,7 @@ fn t23_cert_renew() {
     let mut ca = CertificateAuthority::retrieve(op).expect("CA retrieve failed");
 
     let lookup = CertLookup::Title(s.server_cert_title.clone());
-    let new_pem = ca
+    let (new_pem, _warning) = ca
         .renew_certificate_bundle(&lookup)
         .expect("renew failed");
 

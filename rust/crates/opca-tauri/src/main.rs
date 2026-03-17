@@ -72,6 +72,7 @@ fn main() {
             commands::ca::test_stores,
             commands::ca::upload_ca_cert,
             commands::ca::upload_ca_database,
+            commands::ca::resign_ca,
             commands::csr::decode_csr,
             commands::csr::list_csrs,
             commands::csr::get_csr_info,

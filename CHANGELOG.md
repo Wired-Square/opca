@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- CA certificate re-sign: extend CA validity with the same key pair via `ca resign` CLI command or the "Re-sign Certificate" button on the CA Certificate tab — re-signs with new `not_before`/`not_after` dates without regenerating keys or reissuing certificates
+- Graduated CA expiry warnings: critical (<30 days), prominent (<6 months), and cert-lifetime-exceeds-CA tiers, displayed in CLI after `ensure_ca` and on the Tauri dashboard
+- Warn-but-allow policy when issuing or renewing certificates that would outlive the CA
+- 6-month caution tier for certificate expiry categorisation in the database (`certs_expires_warning` / `ext_certs_expires_warning`)
 - Rust CLI (`opca-cli` crate): complete command-line interface replacing the deprecated Python CLI, with all 8 command groups (ca, cert, crl, csr, database, dkim, openvpn, vault) and 35 subcommands using clap v4
 - Update notification: checks GitHub releases on startup and displays a badge in the sidebar and login view when a newer version is available
 - Sidebar operation status: shows the currently active op CLI operation (with spinner) at the bottom of the sidebar

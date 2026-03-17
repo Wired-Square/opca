@@ -14,11 +14,24 @@ pub struct DashboardData {
     pub ca_valid: bool,
     pub ca_cn: Option<String>,
     pub ca_expiry: Option<String>,
+    pub ca_expiry_warning: Option<CaExpiryWarningDto>,
     pub total_certs: i64,
     pub valid_certs: usize,
     pub expired_certs: usize,
     pub expiring_certs: usize,
+    pub warning_certs: usize,
     pub revoked_certs: usize,
+}
+
+/// Graduated CA certificate expiry warning for the frontend.
+#[derive(Debug, Serialize)]
+pub struct CaExpiryWarningDto {
+    /// Warning level: "critical", "prominent", "cert_lifetime", or "none".
+    pub level: String,
+    /// Days remaining until CA certificate expires.
+    pub days_remaining: Option<i64>,
+    /// Human-readable warning message.
+    pub message: String,
 }
 
 // ---------------------------------------------------------------------------

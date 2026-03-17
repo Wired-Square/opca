@@ -440,6 +440,116 @@ impl CertificateBundle {
     }
 
     // -----------------------------------------------------------------------
+    // Re-sign CA (same key, new validity)
+    // -----------------------------------------------------------------------
+
+    /// Re-sign an existing CA certificate with the same key but new validity dates.
+    ///
+    /// Keeps the same subject, serial, and key pair. Replaces the certificate
+    /// with a freshly signed one valid from now for `ca_days` days.
+    pub fn re_sign_ca(&mut self, ca_days: i64) -> Result<&X509, OpcaError> {
+        if self.cert_type != CertType::Ca {
+            return Err(OpcaError::InvalidCertificate(
+                "re_sign_ca() called on non-CA bundle".into(),
+            ));
+        }
+
+        let key = self
+            .private_key
+            .as_ref()
+            .ok_or_else(|| OpcaError::Crypto("Cannot re-sign CA without a private key".into()))?;
+
+        let existing_cert = self.certificate.as_ref().ok_or_else(|| {
+            OpcaError::InvalidCertificate("Cannot re-sign CA without an existing certificate".into())
+        })?;
+
+        // Preserve the serial from the existing certificate
+        let serial_bn = existing_cert
+            .serial_number()
+            .to_bn()
+            .map_err(|e| OpcaError::Crypto(format!("Serial: {e}")))?;
+        let serial_asn1 = serial_bn
+            .to_asn1_integer()
+            .map_err(|e| OpcaError::Crypto(format!("Serial ASN1: {e}")))?;
+
+        let subject = existing_cert.subject_name();
+
+        let not_before =
+            Asn1Time::days_from_now(0).map_err(|e| OpcaError::Crypto(format!("{e}")))?;
+        let not_after = Asn1Time::days_from_now(ca_days as u32)
+            .map_err(|e| OpcaError::Crypto(format!("{e}")))?;
+
+        let mut builder =
+            X509Builder::new().map_err(|e| OpcaError::Crypto(format!("X509 builder: {e}")))?;
+        builder
+            .set_version(2)
+            .map_err(|e| OpcaError::Crypto(format!("Set version: {e}")))?;
+        builder
+            .set_subject_name(subject)
+            .map_err(|e| OpcaError::Crypto(format!("Set subject: {e}")))?;
+        builder
+            .set_issuer_name(subject)
+            .map_err(|e| OpcaError::Crypto(format!("Set issuer: {e}")))?;
+        builder
+            .set_pubkey(key)
+            .map_err(|e| OpcaError::Crypto(format!("Set pubkey: {e}")))?;
+        builder
+            .set_serial_number(&serial_asn1)
+            .map_err(|e| OpcaError::Crypto(format!("Set serial: {e}")))?;
+        builder
+            .set_not_before(&not_before)
+            .map_err(|e| OpcaError::Crypto(format!("Set not_before: {e}")))?;
+        builder
+            .set_not_after(&not_after)
+            .map_err(|e| OpcaError::Crypto(format!("Set not_after: {e}")))?;
+
+        // SubjectKeyIdentifier
+        let ski = SubjectKeyIdentifier::new()
+            .build(&builder.x509v3_context(None, None))
+            .map_err(|e| OpcaError::Crypto(format!("SKI: {e}")))?;
+        builder
+            .append_extension(ski)
+            .map_err(|e| OpcaError::Crypto(format!("Append SKI: {e}")))?;
+
+        // AuthorityKeyIdentifier (self-referencing for root CA)
+        let aki = AuthorityKeyIdentifier::new()
+            .keyid(true)
+            .build(&builder.x509v3_context(None, None))
+            .map_err(|e| OpcaError::Crypto(format!("AKI: {e}")))?;
+        builder
+            .append_extension(aki)
+            .map_err(|e| OpcaError::Crypto(format!("Append AKI: {e}")))?;
+
+        // BasicConstraints: CA:TRUE
+        let bc = BasicConstraints::new()
+            .critical()
+            .ca()
+            .build()
+            .map_err(|e| OpcaError::Crypto(format!("BasicConstraints: {e}")))?;
+        builder
+            .append_extension(bc)
+            .map_err(|e| OpcaError::Crypto(format!("Append BC: {e}")))?;
+
+        // KeyUsage: keyCertSign + cRLSign
+        let ku = KeyUsage::new()
+            .critical()
+            .key_cert_sign()
+            .crl_sign()
+            .build()
+            .map_err(|e| OpcaError::Crypto(format!("KeyUsage: {e}")))?;
+        builder
+            .append_extension(ku)
+            .map_err(|e| OpcaError::Crypto(format!("Append KU: {e}")))?;
+
+        builder
+            .sign(key, MessageDigest::sha256())
+            .map_err(|e| OpcaError::Crypto(format!("Sign: {e}")))?;
+
+        self.certificate = Some(builder.build());
+        Ok(self.certificate.as_ref().unwrap())
+    }
+
+    // -----------------------------------------------------------------------
     // Update certificate (after external signing)
     // -----------------------------------------------------------------------
 
@@ -1127,5 +1237,72 @@ mod tests {
             issuer.contains("Issuer Test CA"),
             "Expected 'Issuer Test CA' in issuer: {issuer}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // re_sign_ca tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_re_sign_ca() {
+        let mut bundle =
+            CertificateBundle::generate(CertType::Ca, "Re-sign CA", ca_config()).unwrap();
+        bundle.self_sign_ca().unwrap();
+
+        let original_cn = bundle.get_certificate_attrib("cn").unwrap();
+        let original_serial = bundle.get_certificate_attrib("serial").unwrap();
+
+        // Re-sign with new validity
+        bundle.re_sign_ca(7300).unwrap();
+
+        // Same subject
+        let new_cn = bundle.get_certificate_attrib("cn").unwrap();
+        assert_eq!(original_cn, new_cn);
+
+        // Same serial
+        let new_serial = bundle.get_certificate_attrib("serial").unwrap();
+        assert_eq!(original_serial, new_serial);
+
+        // Still a valid CA certificate
+        assert!(bundle.is_valid().unwrap());
+        assert!(bundle.is_ca_certificate().unwrap());
+
+        // Key type preserved
+        let key_type = bundle.get_certificate_attrib("key_type").unwrap();
+        assert_eq!(key_type, Some("RSA".to_string()));
+    }
+
+    #[test]
+    fn test_re_sign_ca_rejects_non_ca() {
+        let bundle =
+            CertificateBundle::generate(CertType::Device, "Not a CA", test_config());
+        let mut bundle = bundle.unwrap();
+
+        let result = bundle.re_sign_ca(3650);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_re_sign_ca_without_key() {
+        // Import a cert without a private key
+        let mut ca_bundle =
+            CertificateBundle::generate(CertType::Ca, "KeylessCA", ca_config()).unwrap();
+        ca_bundle.self_sign_ca().unwrap();
+
+        let cert_pem = ca_bundle.certificate_pem().unwrap();
+
+        let mut imported = CertificateBundle::import(
+            CertType::Ca,
+            "KeylessCA",
+            cert_pem.as_bytes(),
+            None,
+            None,
+            None,
+            CertBundleConfig::default(),
+        )
+        .unwrap();
+
+        let result = imported.re_sign_ca(3650);
+        assert!(result.is_err());
     }
 }

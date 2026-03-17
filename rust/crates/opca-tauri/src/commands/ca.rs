@@ -138,6 +138,45 @@ pub async fn upload_ca_database(state: State<'_, AppState>) -> Result<(), String
     Ok(())
 }
 
+#[tauri::command]
+pub async fn resign_ca(
+    state: State<'_, AppState>,
+    ca_days: i64,
+) -> Result<CaInfo, String> {
+    let mut conn = state.ensure_ca()?;
+    let ca = conn.ca.as_mut().ok_or("CA not available")?;
+
+    ca.re_sign_ca(ca_days).map_err(|e| {
+        state.log_err("resign_ca", Some(e.to_string()));
+        e.to_string()
+    })?;
+
+    state.log_ok("resign_ca", Some(format!("CA certificate re-signed for {ca_days} days")));
+
+    let bundle = ca.ca_bundle.as_ref()
+        .ok_or("CA certificate not loaded")?;
+
+    let attr = |name: &str| -> Option<String> {
+        bundle.get_certificate_attrib(name).ok().flatten()
+    };
+
+    let is_valid = ca.is_valid().unwrap_or(false);
+    let cert_pem = bundle.certificate_pem().ok();
+
+    Ok(CaInfo {
+        cn: attr("cn"),
+        subject: attr("subject"),
+        issuer: attr("issuer"),
+        serial: attr("serial"),
+        not_before: attr("not_before"),
+        not_after: attr("not_after"),
+        key_type: attr("key_type"),
+        key_size: attr("key_size"),
+        is_valid,
+        cert_pem,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------

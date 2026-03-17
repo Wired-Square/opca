@@ -234,11 +234,15 @@ pub async fn create_cert(
         ca_days: ca_config.days,
     };
 
-    let bundle = ca.generate_certificate_bundle(cert_type.clone(), &request.cn, bundle_config)
+    let (bundle, issuance_warning) = ca.generate_certificate_bundle(cert_type.clone(), &request.cn, bundle_config)
         .map_err(|e| {
             state.log_err("create_cert", Some(e.to_string()));
             e.to_string()
         })?;
+
+    if let Some(ref w) = issuance_warning {
+        state.log_ok("create_cert", Some(w.message.clone()));
+    }
 
     state.log_ok("create_cert", Some(format!("Created {} cert '{}'", cert_type, request.cn)));
 
@@ -288,14 +292,18 @@ pub async fn renew_cert(
     let mut conn = state.ensure_ca()?;
     let ca = conn.ca.as_mut().ok_or("CA not available")?;
 
-    let new_serial = ca.renew_certificate_bundle(&CertLookup::Serial(serial.clone()))
+    let (new_pem, issuance_warning) = ca.renew_certificate_bundle(&CertLookup::Serial(serial.clone()))
         .map_err(|e| {
             state.log_err("renew_cert", Some(e.to_string()));
             e.to_string()
         })?;
 
-    state.log_ok("renew_cert", Some(format!("Renewed certificate {} → {}", serial, new_serial)));
-    Ok(new_serial)
+    if let Some(ref w) = issuance_warning {
+        state.log_ok("renew_cert", Some(w.message.clone()));
+    }
+
+    state.log_ok("renew_cert", Some(format!("Renewed certificate {} → {}", serial, new_pem)));
+    Ok(new_pem)
 }
 
 #[tauri::command]

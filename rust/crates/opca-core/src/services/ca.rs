@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use foreign_types::ForeignType;
 use openssl::asn1::Asn1Time;
 use openssl::bn::BigNum;
@@ -15,6 +16,7 @@ use openssl::x509::extension::{
     SubjectAlternativeName, SubjectKeyIdentifier,
 };
 use openssl::x509::{X509Builder, X509Req, X509};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::constants::{OpConf, DEFAULT_OP_CONF, DEFAULT_STORAGE_CONF};
@@ -43,6 +45,85 @@ pub enum CaCommand {
     Retrieve,
     /// Rebuild the CA database by scanning vault items.
     RebuildDatabase,
+}
+
+// ---------------------------------------------------------------------------
+// CA expiry warnings
+// ---------------------------------------------------------------------------
+
+/// Graduated warning level for CA certificate expiry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "level", rename_all = "snake_case")]
+pub enum CaExpiryWarning {
+    /// CA has plenty of remaining validity.
+    None,
+    /// CA has fewer days remaining than the default certificate lifetime.
+    CertLifetimeExceedsCa {
+        days_remaining: i64,
+        cert_lifetime_days: i64,
+    },
+    /// CA expires within 6 months.
+    Prominent { days_remaining: i64 },
+    /// CA expires within 30 days.
+    Critical { days_remaining: i64 },
+}
+
+/// Warning returned when a certificate would outlive the CA.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CertIssuanceWarning {
+    pub cert_not_after: String,
+    pub ca_not_after: String,
+    pub message: String,
+}
+
+/// Assess the CA certificate's expiry relative to now.
+///
+/// Tiers are checked most-urgent first: Critical (<30d), Prominent (<183d),
+/// CertLifetimeExceedsCa (<cert_lifetime_days), then None.
+pub fn assess_ca_expiry(
+    ca_not_after: DateTime<Utc>,
+    cert_lifetime_days: i64,
+    now: DateTime<Utc>,
+) -> CaExpiryWarning {
+    let days_remaining = (ca_not_after - now).num_days();
+
+    if days_remaining < 30 {
+        CaExpiryWarning::Critical { days_remaining }
+    } else if days_remaining < 183 {
+        CaExpiryWarning::Prominent { days_remaining }
+    } else if days_remaining < cert_lifetime_days {
+        CaExpiryWarning::CertLifetimeExceedsCa {
+            days_remaining,
+            cert_lifetime_days,
+        }
+    } else {
+        CaExpiryWarning::None
+    }
+}
+
+/// Check whether a certificate with the given lifetime would outlive the CA.
+///
+/// Returns `Some(warning)` if `now + cert_days > ca_not_after`.
+pub fn assess_cert_issuance(
+    ca_not_after: DateTime<Utc>,
+    cert_days: i64,
+    now: DateTime<Utc>,
+) -> Option<CertIssuanceWarning> {
+    let cert_not_after = now + chrono::Duration::days(cert_days);
+    if cert_not_after > ca_not_after {
+        let ca_str = datetime::format_datetime(ca_not_after, DateTimeFormat::Text);
+        let cert_str = datetime::format_datetime(cert_not_after, DateTimeFormat::Text);
+        Some(CertIssuanceWarning {
+            cert_not_after: cert_str.clone(),
+            ca_not_after: ca_str.clone(),
+            message: format!(
+                "Warning: This certificate will expire on {cert_str} but the CA expires on {ca_str}. \
+                 The certificate will become invalid when the CA expires."
+            ),
+        })
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -467,12 +548,15 @@ impl<R: CommandRunner> CertificateAuthority<R> {
     // -----------------------------------------------------------------------
 
     /// Generate a new certificate bundle — key + CSR + CA-signed cert.
+    ///
+    /// Returns the bundle and an optional warning if the certificate would
+    /// outlive the CA.
     pub fn generate_certificate_bundle(
         &mut self,
         cert_type: CertType,
         item_title: &str,
         config: CertBundleConfig,
-    ) -> Result<CertificateBundle, OpcaError> {
+    ) -> Result<(CertificateBundle, Option<CertIssuanceWarning>), OpcaError> {
         let mut bundle = CertificateBundle::generate(cert_type.clone(), item_title, config)?;
 
         let csr_pem = bundle.csr_pem().ok_or_else(|| {
@@ -484,11 +568,14 @@ impl<R: CommandRunner> CertificateAuthority<R> {
         let signed_cert = self.sign_certificate(&csr, &cert_type)?;
         bundle.update_certificate(signed_cert)?;
 
+        // Check if the cert will outlive the CA
+        let warning = self.check_cert_issuance_warning();
+
         // Store in 1Password
         self.ca_bundle_for_store(Some(&bundle))?;
         self.store_certbundle_for(&bundle, None, None, true)?;
 
-        Ok(bundle)
+        Ok((bundle, warning))
     }
 
     /// Check whether a certificate was signed by this CA and is within its validity period.
@@ -599,10 +686,13 @@ impl<R: CommandRunner> CertificateAuthority<R> {
     }
 
     /// Renew a previously signed certificate from its stored CSR.
+    ///
+    /// Returns the renewed certificate PEM and an optional warning if the
+    /// certificate would outlive the CA.
     pub fn renew_certificate_bundle(
         &mut self,
         lookup: &CertLookup,
-    ) -> Result<String, OpcaError> {
+    ) -> Result<(String, Option<CertIssuanceWarning>), OpcaError> {
         let db = self.ca_database.as_ref()
             .ok_or_else(|| OpcaError::Other("CA not initialised".into()))?;
 
@@ -634,6 +724,9 @@ impl<R: CommandRunner> CertificateAuthority<R> {
         let signed_cert = self.sign_certificate(&csr, &cert_type)?;
         cert_bundle.update_certificate(signed_cert)?;
 
+        // Check if the renewed cert will outlive the CA
+        let warning = self.check_cert_issuance_warning();
+
         // Rename old to serial number
         if item_title != item_serial {
             self.rename_certbundle(&item_title, &item_serial, false)?;
@@ -643,7 +736,8 @@ impl<R: CommandRunner> CertificateAuthority<R> {
         self.store_certbundle_for(&cert_bundle, None, None, false)?;
         self.store_ca_database()?;
 
-        cert_bundle.certificate_pem()
+        let pem = cert_bundle.certificate_pem()?;
+        Ok((pem, warning))
     }
 
     // -----------------------------------------------------------------------
@@ -778,6 +872,93 @@ impl<R: CommandRunner> CertificateAuthority<R> {
             .as_ref()
             .ok_or(OpcaError::CaNotFound)?
             .is_valid()
+    }
+
+    /// Assess the CA certificate's expiry and return a graduated warning.
+    pub fn check_ca_expiry(&self) -> CaExpiryWarning {
+        let bundle = match self.ca_bundle.as_ref() {
+            Some(b) => b,
+            None => return CaExpiryWarning::None,
+        };
+
+        let not_after_str = match bundle.get_certificate_attrib("not_after") {
+            Ok(Some(s)) => s,
+            _ => return CaExpiryWarning::None,
+        };
+
+        let ca_not_after = match datetime::parse_datetime(&not_after_str, DateTimeFormat::Openssl) {
+            Ok(dt) => dt,
+            Err(_) => return CaExpiryWarning::None,
+        };
+
+        let cert_lifetime_days = self
+            .ca_database
+            .as_ref()
+            .and_then(|db| db.get_config().ok())
+            .and_then(|c| c.days)
+            .unwrap_or(365);
+
+        assess_ca_expiry(ca_not_after, cert_lifetime_days, Utc::now())
+    }
+
+    /// Get the CA certificate's `not_after` as a parsed UTC datetime.
+    fn ca_not_after(&self) -> Result<DateTime<Utc>, OpcaError> {
+        let bundle = self.ca_bundle.as_ref().ok_or(OpcaError::CaNotFound)?;
+        let not_after_str = bundle
+            .get_certificate_attrib("not_after")?
+            .ok_or_else(|| OpcaError::InvalidCertificate("CA has no not_after".into()))?;
+        datetime::parse_datetime(&not_after_str, DateTimeFormat::Openssl)
+    }
+
+    /// Check if a certificate with the default lifetime would outlive the CA.
+    fn check_cert_issuance_warning(&self) -> Option<CertIssuanceWarning> {
+        let ca_not_after = self.ca_not_after().ok()?;
+        let cert_days = self
+            .ca_database
+            .as_ref()
+            .and_then(|db| db.get_config().ok())
+            .and_then(|c| c.days)
+            .unwrap_or(365);
+        assess_cert_issuance(ca_not_after, cert_days, Utc::now())
+    }
+
+    // -----------------------------------------------------------------------
+    // CA re-sign
+    // -----------------------------------------------------------------------
+
+    /// Re-sign the CA certificate with the same key but new validity dates.
+    ///
+    /// Keeps the same subject, serial, and key pair. Updates the certificate
+    /// in 1Password and the CA database.
+    pub fn re_sign_ca(&mut self, ca_days: i64) -> Result<(), OpcaError> {
+        let bundle = self.ca_bundle.as_mut().ok_or(OpcaError::CaNotFound)?;
+        bundle.re_sign_ca(ca_days)?;
+
+        // Extract updated attributes
+        let cert_pem = bundle.certificate_pem()?;
+        let not_before = bundle.get_certificate_attrib("not_before")?.unwrap_or_default();
+        let not_after = bundle.get_certificate_attrib("not_after")?.unwrap_or_default();
+
+        let not_before_text = openssl_to_text(&not_before);
+        let not_after_text = openssl_to_text(&not_after);
+
+        // Update the CA item in 1Password
+        let attributes = [
+            format!("{}={cert_pem}", self.op_config.cert_item),
+            format!("{}={not_before_text}", self.op_config.start_date_item),
+            format!("{}={not_after_text}", self.op_config.expiry_date_item),
+        ];
+        let attr_refs: Vec<&str> = attributes.iter().map(|s| s.as_str()).collect();
+        self.op.store_item(
+            self.op_config.ca_title,
+            Some(&attr_refs),
+            StoreAction::Edit,
+            self.op_config.category,
+            None,
+        )?;
+
+        self.store_ca_database()?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -1863,5 +2044,76 @@ mod tests {
         let pem = build_crl(ca_cert, ca_key, 1, 30, &revoked, &db).unwrap();
         assert!(pem.contains("BEGIN X509 CRL"));
         assert!(pem.contains("END X509 CRL"));
+    }
+
+    // -----------------------------------------------------------------------
+    // CA expiry warning tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_assess_ca_expiry_critical() {
+        let now = chrono::Utc::now();
+        let ca_not_after = now + chrono::Duration::days(15);
+        let result = assess_ca_expiry(ca_not_after, 365, now);
+        assert!(matches!(result, CaExpiryWarning::Critical { days_remaining: 15 }));
+    }
+
+    #[test]
+    fn test_assess_ca_expiry_prominent() {
+        let now = chrono::Utc::now();
+        let ca_not_after = now + chrono::Duration::days(90);
+        let result = assess_ca_expiry(ca_not_after, 365, now);
+        assert!(matches!(result, CaExpiryWarning::Prominent { days_remaining: 90 }));
+    }
+
+    #[test]
+    fn test_assess_ca_expiry_cert_lifetime() {
+        let now = chrono::Utc::now();
+        let ca_not_after = now + chrono::Duration::days(200);
+        let result = assess_ca_expiry(ca_not_after, 365, now);
+        assert!(matches!(
+            result,
+            CaExpiryWarning::CertLifetimeExceedsCa {
+                days_remaining: 200,
+                cert_lifetime_days: 365,
+            }
+        ));
+    }
+
+    #[test]
+    fn test_assess_ca_expiry_none() {
+        let now = chrono::Utc::now();
+        let ca_not_after = now + chrono::Duration::days(3000);
+        let result = assess_ca_expiry(ca_not_after, 365, now);
+        assert!(matches!(result, CaExpiryWarning::None));
+    }
+
+    #[test]
+    fn test_assess_ca_expiry_tiers_ordered() {
+        // 10 days should be Critical, not Prominent or CertLifetime
+        let now = chrono::Utc::now();
+        let ca_not_after = now + chrono::Duration::days(10);
+        let result = assess_ca_expiry(ca_not_after, 365, now);
+        assert!(matches!(result, CaExpiryWarning::Critical { .. }));
+    }
+
+    #[test]
+    fn test_assess_cert_issuance_warning() {
+        let now = chrono::Utc::now();
+        // CA expires in 200 days, cert would be valid for 365
+        let ca_not_after = now + chrono::Duration::days(200);
+        let result = assess_cert_issuance(ca_not_after, 365, now);
+        assert!(result.is_some());
+        let w = result.unwrap();
+        assert!(w.message.contains("will expire on"));
+    }
+
+    #[test]
+    fn test_assess_cert_issuance_ok() {
+        let now = chrono::Utc::now();
+        // CA expires in 3000 days, cert would be valid for 365
+        let ca_not_after = now + chrono::Duration::days(3000);
+        let result = assess_cert_issuance(ca_not_after, 365, now);
+        assert!(result.is_none());
     }
 }

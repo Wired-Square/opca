@@ -32,6 +32,7 @@ pub fn dispatch(cli: Cli) -> Result<(), OpcaError> {
 
     if needs_ca {
         app.ensure_ca()?;
+        ca::warn_ca_expiry(&app);
     }
 
     match cli.command {

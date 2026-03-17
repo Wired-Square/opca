@@ -1,7 +1,7 @@
 import { Show, For, createSignal, createResource, onMount, onCleanup } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { appState, setAppState, hasCA, type VaultState } from "../stores/app";
-import { getCaInfo, getCaConfig, updateCaConfig, initCa, testStores, uploadCaCert } from "../api/ca";
+import { getCaInfo, getCaConfig, updateCaConfig, initCa, testStores, uploadCaCert, resignCa } from "../api/ca";
 import { vaultRestore, vaultInfo } from "../api/vault-backup";
 import { formatDate } from "../utils/dates";
 import TzToggle from "../components/TzToggle";
@@ -14,7 +14,7 @@ type Tab = "certificate" | "config" | "stores" | "init" | "restore" | "info";
 
 export default function CA() {
   const [tab, setTab] = createSignal<Tab>(hasCA() ? "certificate" : "init");
-  const [caInfo] = createResource<CaInfo>(getCaInfo);
+  const [caInfo, { refetch: refetchCaInfo }] = createResource<CaInfo>(getCaInfo);
   const [caConfig, { refetch: refetchConfig }] = createResource<CaConfig>(getCaConfig);
 
   return (
@@ -53,7 +53,7 @@ export default function CA() {
       </div>
 
       <Show when={tab() === "certificate"}>
-        <CertificateTab info={caInfo} config={caConfig} />
+        <CertificateTab info={caInfo} config={caConfig} onResign={refetchCaInfo} />
       </Show>
       <Show when={tab() === "config"}>
         <ConfigTab config={caConfig} onSave={refetchConfig} />
@@ -76,10 +76,18 @@ export default function CA() {
   );
 }
 
-function CertificateTab(props: { info: () => CaInfo | undefined; config: () => CaConfig | undefined }) {
+function CertificateTab(props: {
+  info: () => CaInfo | undefined;
+  config: () => CaConfig | undefined;
+  onResign: () => void;
+}) {
   const [copied, setCopied] = createSignal(false);
   const [uploading, setUploading] = createSignal(false);
   const [uploadResult, setUploadResult] = createSignal<string | null>(null);
+  const [showResign, setShowResign] = createSignal(false);
+  const [resignDays, setResignDays] = createSignal("3650");
+  const [resigning, setResigning] = createSignal(false);
+  const [resignResult, setResignResult] = createSignal<string | null>(null);
 
   const hasPublicStore = () => !!props.config()?.ca_public_store;
 
@@ -106,6 +114,27 @@ function CertificateTab(props: { info: () => CaInfo | undefined; config: () => C
     }
   }
 
+  async function handleResign() {
+    const days = parseInt(resignDays());
+    if (!days || days <= 0) {
+      setResignResult("Please enter a valid number of days.");
+      return;
+    }
+    setResigning(true);
+    setResignResult(null);
+    try {
+      await resignCa(days);
+      setResignResult("ok");
+      setShowResign(false);
+      props.onResign();
+      setTimeout(() => setResignResult(null), 5000);
+    } catch (e) {
+      setResignResult(String(e));
+    } finally {
+      setResigning(false);
+    }
+  }
+
   return (
     <div class="tab-content">
       <Show when={props.info()} fallback={<Spinner message="Loading…" />}>
@@ -128,13 +157,51 @@ function CertificateTab(props: { info: () => CaInfo | undefined; config: () => C
               </div>
             </div>
 
-            <Show when={hasPublicStore()}>
-              <div class="form-actions">
+            <div class="form-actions">
+              <button class="btn-secondary" onClick={() => setShowResign(!showResign())}>
+                {showResign() ? "Cancel" : "Re-sign Certificate"}
+              </button>
+              <Show when={hasPublicStore()}>
                 <button class="btn-warning" onClick={handleUpload} disabled={uploading()}>
                   {uploading() ? "Uploading…" : "Upload Certificate"}
                 </button>
-              </div>
+              </Show>
+            </div>
 
+            <Show when={resignResult() === "ok"}>
+              <p class="form-success">CA certificate re-signed successfully.</p>
+            </Show>
+
+            <Show when={showResign()}>
+              <div class="resign-section">
+                <p class="text-muted">
+                  Re-sign the CA certificate with the same key pair but new validity dates.
+                  Existing certificates remain valid.
+                </p>
+                <div class="resign-form">
+                  <div class="form-group">
+                    <label class="form-label">New validity (days)</label>
+                    <input
+                      type="number"
+                      value={resignDays()}
+                      onInput={(e) => setResignDays(e.currentTarget.value)}
+                      min="1"
+                      style={{ "max-width": "200px" }}
+                    />
+                  </div>
+                  <div class="form-actions">
+                    <button class="btn-primary" onClick={handleResign} disabled={resigning()}>
+                      {resigning() ? "Re-signing…" : "Re-sign CA"}
+                    </button>
+                  </div>
+                </div>
+                <Show when={resignResult() && resignResult() !== "ok"}>
+                  <p class="form-error">{resignResult()}</p>
+                </Show>
+              </div>
+            </Show>
+
+            <Show when={hasPublicStore()}>
               <Show when={uploadResult() === "ok"}>
                 <p class="form-success">Certificate uploaded to public store.</p>
               </Show>
@@ -842,6 +909,26 @@ const caStyles = `
   .btn-sm {
     padding: 4px 10px;
     font-size: 0.75rem;
+  }
+
+  .resign-section {
+    margin-top: 16px;
+    padding: 16px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  .resign-section .text-muted {
+    margin: 0 0 12px;
+  }
+
+  .resign-form {
+    max-width: 300px;
+  }
+
+  .resign-form .form-actions {
+    margin-top: 12px;
   }
 
   .store-test-results {

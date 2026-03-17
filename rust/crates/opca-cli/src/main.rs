@@ -203,6 +203,13 @@ pub enum CaAction {
         serial: Option<String>,
     },
 
+    /// Re-sign the CA certificate with the same key but new validity dates
+    Resign {
+        /// Number of days the new CA certificate is valid for
+        #[arg(long)]
+        ca_days: i64,
+    },
+
     /// Upload the CA Certificate to the public store
     Upload {
         /// Store location (e.g. s3://bucket/key)

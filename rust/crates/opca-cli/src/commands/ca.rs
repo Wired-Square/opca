@@ -1,6 +1,6 @@
 use opca_core::error::OpcaError;
 use opca_core::op::{CommandRunner, ShellRunner};
-use opca_core::services::ca::CertificateAuthority;
+use opca_core::services::ca::{CaExpiryWarning, CertificateAuthority};
 use opca_core::services::database::CaConfig;
 
 use crate::app::{with_lock, AppContext};
@@ -54,6 +54,7 @@ pub fn dispatch(args: CaArgs, app: &mut AppContext<ShellRunner>) -> Result<(), O
             cn,
             serial,
         } => handle_list(app, expired, revoked, expiring, valid, cn, serial),
+        CaAction::Resign { ca_days } => handle_resign(app, ca_days),
         CaAction::Upload { store } => handle_upload(app, store),
     }
 }
@@ -351,6 +352,56 @@ fn handle_upload<R: CommandRunner>(
     }
 
     Ok(())
+}
+
+fn handle_resign<R: CommandRunner>(
+    app: &mut AppContext<R>,
+    ca_days: i64,
+) -> Result<(), OpcaError> {
+    output::title("Re-signing the CA Certificate");
+
+    with_lock(app, "ca_resign", |app| {
+        let ca = app.ca.as_mut().ok_or(OpcaError::CaNotFound)?;
+        ca.re_sign_ca(ca_days)?;
+        output::print_result("CA certificate re-signed", true);
+
+        let expiry = ca
+            .ca_bundle
+            .as_ref()
+            .and_then(|b| b.get_certificate_attrib("not_after").ok().flatten())
+            .unwrap_or_else(|| "Unknown".to_string());
+        output::info("New Expiry", &expiry);
+
+        Ok(())
+    })
+}
+
+/// Print a warning if the CA certificate is approaching expiry.
+pub fn warn_ca_expiry<R: CommandRunner>(app: &AppContext<R>) {
+    if let Some(ref ca) = app.ca {
+        match ca.check_ca_expiry() {
+            CaExpiryWarning::Critical { days_remaining } => {
+                output::warning(&format!(
+                    "CRITICAL: CA certificate expires in {days_remaining} days!"
+                ));
+            }
+            CaExpiryWarning::Prominent { days_remaining } => {
+                output::warning(&format!(
+                    "CA certificate expires in {days_remaining} days"
+                ));
+            }
+            CaExpiryWarning::CertLifetimeExceedsCa {
+                days_remaining,
+                cert_lifetime_days,
+            } => {
+                output::warning(&format!(
+                    "CA has {days_remaining} days remaining but default cert lifetime is \
+                     {cert_lifetime_days} days — new certificates will outlive the CA"
+                ));
+            }
+            CaExpiryWarning::None => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
