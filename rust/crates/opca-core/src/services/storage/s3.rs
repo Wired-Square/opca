@@ -6,6 +6,7 @@
 //!
 //! URI format: `s3://bucket/key/prefix`
 
+use log::{debug, error, info};
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
 use s3::Region;
@@ -68,40 +69,46 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 
 impl StorageBackend for StorageS3 {
     fn upload(&self, content: &[u8], uri: &str) -> Result<(), OpcaError> {
+        info!("[s3] uploading {} bytes to {}", content.len(), uri);
         let (bucket, key) = self.bucket_from_uri(uri)?;
 
         block_on(async {
             let response = bucket
                 .put_object(&key, content)
                 .await
-                .map_err(|e| OpcaError::Storage(format!("S3 put_object failed: {e}")))?;
+                .map_err(|e| {
+                    error!("[s3] put_object failed for {uri}: {e}");
+                    OpcaError::Storage(format!("S3 put_object failed: {e}"))
+                })?;
 
             if response.status_code() >= 300 {
+                error!("[s3] put_object returned status {} for {uri}", response.status_code());
                 return Err(OpcaError::Storage(format!(
                     "S3 put_object returned status {}",
                     response.status_code()
                 )));
             }
 
+            debug!("[s3] upload succeeded for {uri}");
             Ok(())
         })
     }
 
     fn test_connection(&self, uri: &str) -> Result<(), OpcaError> {
+        info!("[s3] testing connection to {}", uri);
         let (bucket, _key) = self.bucket_from_uri(uri)?;
 
         block_on(async {
-            // A HEAD on the bucket root verifies both credentials and bucket
-            // existence.  list_page with max_keys=0 is another option but
-            // HEAD is cheaper.
             let results = bucket
                 .list("".to_string(), Some("/".to_string()))
                 .await
-                .map_err(|e| OpcaError::Storage(format!("S3 connection test failed: {e}")))?;
+                .map_err(|e| {
+                    error!("[s3] connection test failed for {uri}: {e}");
+                    OpcaError::Storage(format!("S3 connection test failed: {e}"))
+                })?;
 
-            // If we got here without error, the credentials and bucket are
-            // valid.  We don't care about the listing contents.
             let _ = results;
+            debug!("[s3] connection test passed for {uri}");
             Ok(())
         })
     }

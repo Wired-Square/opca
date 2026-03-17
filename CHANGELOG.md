@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Graduated CA expiry warnings: critical (<30 days), prominent (<6 months), and cert-lifetime-exceeds-CA tiers, displayed in CLI after `ensure_ca` and on the Tauri dashboard
 - Warn-but-allow policy when issuing or renewing certificates that would outlive the CA
 - 6-month caution tier for certificate expiry categorisation in the database (`certs_expires_warning` / `ext_certs_expires_warning`)
+- File-based logging via `tauri-plugin-log` — timestamped debug logs written to `~/Library/Logs/opCA/opca.log` with 5 MB rotation, covering all `op` CLI calls, CA operations, and storage backends
+- Structured `log` crate integration across `opca-core`: `op` command execution, CA operations, storage backends, and S3 uploads all emit debug/info/error log messages instead of raw `eprintln!`
 - Rust CLI (`opca-cli` crate): complete command-line interface replacing the deprecated Python CLI, with all 8 command groups (ca, cert, crl, csr, database, dkim, openvpn, vault) and 35 subcommands using clap v4
 - Update notification: checks GitHub releases on startup and displays a badge in the sidebar and login view when a newer version is available
 - Sidebar operation status: shows the currently active op CLI operation (with spinner) at the bottom of the sidebar
@@ -27,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added AMFI/OCSP cache warmup at startup (`op --version`) so first real `op` call is not penalised by macOS code-signature verification
 - Added 30-second timeout on `op` CLI calls to prevent indefinite hangs
 - Added macOS hardened-runtime entitlements (`disable-library-validation`, `automation.apple-events`, `inherit`) for reliable child-process IPC in signed builds
+- Store connection test now fetches AWS credentials once and reuses them across all S3 stores, and spawns `op plugin run` directly with a 5-minute timeout to handle slow AMFI verification in hardened-runtime builds
 
 ## [0.99.8] - 2026-03-15
 

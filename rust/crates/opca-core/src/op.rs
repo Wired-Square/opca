@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use log::{debug, error, warn};
 use serde::Deserialize;
 
 use crate::constants::OP_BIN;
@@ -64,7 +65,7 @@ impl CommandRunner for ShellRunner {
                 }
             })
             .collect();
-        eprintln!("[op] running: {} {}", bin, redacted.join(" "));
+        debug!("[op] running: {} {}", bin, redacted.join(" "));
 
         let mut cmd = Command::new(bin);
         cmd.args(args);
@@ -107,6 +108,7 @@ impl CommandRunner for ShellRunner {
                 Ok(None) => {
                     if start.elapsed() > timeout {
                         let _ = child.kill();
+                        error!("[op] command timed out after {}s: {} {}", OP_TIMEOUT_SECS, bin, redacted.join(" "));
                         return Err(OpcaError::Io(format!(
                             "op command timed out after {}s",
                             OP_TIMEOUT_SECS
@@ -126,10 +128,12 @@ impl CommandRunner for ShellRunner {
             success: output.status.success(),
         };
 
-        if !result.success {
-            eprintln!("[op] command failed (exit {:?})", output.status.code());
+        if result.success {
+            debug!("[op] command succeeded in {:.1}s", start.elapsed().as_secs_f64());
+        } else {
+            error!("[op] command failed (exit {:?}): {} {}", output.status.code(), bin, redacted.join(" "));
             if !result.stderr.is_empty() {
-                eprintln!("[op] stderr: {}", result.stderr.trim());
+                error!("[op] stderr: {}", result.stderr.trim());
             }
         }
 
@@ -296,7 +300,7 @@ impl<R: CommandRunner> Op<R> {
         }
 
         // Attempt a signin (triggers biometric/system auth prompt).
-        eprintln!("[op] not signed in, attempting op signin…");
+        warn!("[op] not signed in, attempting op signin…");
         self.attempt_signin()?;
 
         // Retry whoami after signin.

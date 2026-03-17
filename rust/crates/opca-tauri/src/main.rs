@@ -3,6 +3,7 @@
 mod commands;
 mod state;
 
+use log::info;
 use state::AppState;
 
 /// Spawn a background `op --version` so that macOS caches the AMFI / code-
@@ -51,7 +52,29 @@ fn main() {
     #[cfg(target_os = "macos")]
     warmup_op_cli();
 
+    let log_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("Library/Logs/opCA");
+    std::fs::create_dir_all(&log_dir).ok();
+
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Debug)
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .max_file_size(5_000_000) // 5 MB
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepAll)
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::Folder {
+                        path: log_dir,
+                        file_name: Some("opca".to_string()),
+                    },
+                ))
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::Stdout,
+                ))
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
@@ -116,6 +139,10 @@ fn main() {
             commands::vault::vault_default_filename,
             commands::update::check_for_updates,
         ])
+        .setup(|_app| {
+            info!("opCA v{} starting", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("failed to run opCA desktop application");
 }

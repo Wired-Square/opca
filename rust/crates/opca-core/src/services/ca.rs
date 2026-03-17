@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use foreign_types::ForeignType;
+use log::{debug, error, info};
 use openssl::asn1::Asn1Time;
 use openssl::bn::BigNum;
 use openssl::hash::MessageDigest;
@@ -146,6 +147,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
 
     /// Initialise a brand-new CA — generates key, self-signs, stores in 1Password.
     pub fn init(op: Op<R>, config: &CaConfig) -> Result<Self, OpcaError> {
+        info!("[ca] initialising new Certificate Authority");
         let op_config = DEFAULT_OP_CONF;
 
         if op.item_exists(op_config.ca_title) {
@@ -213,6 +215,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
 
     /// Retrieve an existing CA from 1Password.
     pub fn retrieve(op: Op<R>) -> Result<Self, OpcaError> {
+        info!("[ca] retrieving CA from 1Password");
         let op_config = DEFAULT_OP_CONF;
 
         // Download database — also proves the CA exists, so we skip a
@@ -291,6 +294,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
         csr: &X509Req,
         cert_type: &CertType,
     ) -> Result<X509, OpcaError> {
+        debug!("[ca] signing {cert_type} certificate");
         let db = self
             .ca_database
             .as_mut()
@@ -556,7 +560,9 @@ impl<R: CommandRunner> CertificateAuthority<R> {
         cert_type: CertType,
         item_title: &str,
         config: CertBundleConfig,
+
     ) -> Result<(CertificateBundle, Option<CertIssuanceWarning>), OpcaError> {
+        info!("[ca] generating {cert_type} certificate '{item_title}'");
         let mut bundle = CertificateBundle::generate(cert_type.clone(), item_title, config)?;
 
         let csr_pem = bundle.csr_pem().ok_or_else(|| {
@@ -693,6 +699,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
         &mut self,
         lookup: &CertLookup,
     ) -> Result<(String, Option<CertIssuanceWarning>), OpcaError> {
+        info!("[ca] renewing certificate {lookup:?}");
         let db = self.ca_database.as_ref()
             .ok_or_else(|| OpcaError::Other("CA not initialised".into()))?;
 
@@ -746,6 +753,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
 
     /// Revoke a valid certificate and update the CA database.
     pub fn revoke_certificate(&mut self, lookup: &CertLookup) -> Result<bool, OpcaError> {
+        info!("[ca] revoking certificate {lookup:?}");
         let db = self.ca_database.as_ref()
             .ok_or_else(|| OpcaError::Other("CA not initialised".into()))?;
 
@@ -770,6 +778,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
 
     /// Generate a CRL, store it in 1Password, and optionally upload.
     pub fn generate_crl(&mut self) -> Result<String, OpcaError> {
+        info!("[ca] generating CRL");
         let db = self.ca_database.as_mut()
             .ok_or_else(|| OpcaError::Other("CA not initialised".into()))?;
         db.process_ca_database(None)?;
@@ -931,6 +940,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
     /// Keeps the same subject, serial, and key pair. Updates the certificate
     /// in 1Password and the CA database.
     pub fn re_sign_ca(&mut self, ca_days: i64) -> Result<(), OpcaError> {
+        info!("[ca] re-signing CA certificate for {ca_days} days");
         let bundle = self.ca_bundle.as_mut().ok_or(OpcaError::CaNotFound)?;
         bundle.re_sign_ca(ca_days)?;
 
@@ -1449,6 +1459,7 @@ impl<R: CommandRunner> CertificateAuthority<R> {
     /// store.  A value of `"ok"` indicates success; anything else is an
     /// error message.
     pub fn test_stores(&self) -> Result<HashMap<String, String>, OpcaError> {
+        info!("[ca] testing store connections");
         let db = self.ca_database.as_ref()
             .ok_or_else(|| OpcaError::Other("CA not initialised".into()))?;
         let config = db.get_config()?;
@@ -1459,6 +1470,30 @@ impl<R: CommandRunner> CertificateAuthority<R> {
             ("backup", config.ca_backup_store),
         ];
 
+        // Check if any store needs S3 credentials so we only fetch once
+        let needs_s3 = stores.iter().any(|(_, uri)| {
+            uri.as_deref().is_some_and(|u| u.starts_with("s3://"))
+        });
+
+        let aws_creds = if needs_s3 {
+            match storage::get_aws_credentials(self.op.runner()) {
+                Ok(creds) => Some(creds),
+                Err(e) => {
+                    error!("[ca] failed to retrieve AWS credentials: {e}");
+                    // Return the error for all S3 stores
+                    let mut results = HashMap::new();
+                    for (name, uri_opt) in &stores {
+                        if uri_opt.as_deref().is_some_and(|u| u.starts_with("s3://")) {
+                            results.insert(name.to_string(), e.to_string());
+                        }
+                    }
+                    return Ok(results);
+                }
+            }
+        } else {
+            None
+        };
+
         let mut results = HashMap::new();
 
         for (name, uri_opt) in stores {
@@ -1466,12 +1501,22 @@ impl<R: CommandRunner> CertificateAuthority<R> {
                 if uri.is_empty() {
                     continue;
                 }
-                let result = match storage::storage_from_uri(uri, self.op.runner()) {
+                info!("[ca] testing {name} store: {uri}");
+                let result = match storage::storage_from_uri_with_creds(uri, aws_creds.as_ref()) {
                     Ok(backend) => match backend.test_connection(uri) {
-                        Ok(()) => "ok".to_string(),
-                        Err(e) => e.to_string(),
+                        Ok(()) => {
+                            info!("[ca] {name} store: ok");
+                            "ok".to_string()
+                        }
+                        Err(e) => {
+                            error!("[ca] {name} store failed: {e}");
+                            e.to_string()
+                        }
                     },
-                    Err(e) => e.to_string(),
+                    Err(e) => {
+                        error!("[ca] {name} store backend error: {e}");
+                        e.to_string()
+                    }
                 };
                 results.insert(name.to_string(), result);
             }
